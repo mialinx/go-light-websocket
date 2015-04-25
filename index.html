@@ -5,6 +5,15 @@
     <title>WebSocket Test</title>
 </head>
 <body>
+    
+
+    <h2>WebSocket Test</h2>
+
+    <input type="text" name="msg" id="inpt">
+    <br>
+    <button id="cls">Close</button>
+
+    <div id="output"></div>
     <script language="javascript" type="text/javascript">
 
       var wsUri = "ws://localhost:8090/";
@@ -51,7 +60,6 @@
       function onMessage(evt)
       {
         writeToScreen('<span style="color: blue;">RESPONSE: ' + evt.data+'</span>');
-        websocket.close();
       }
 
       function onError(evt)
@@ -70,16 +78,23 @@
         var pre = document.createElement("p");
         pre.style.wordWrap = "break-word";
         pre.innerHTML = message;
-        output.appendChild(pre);
+        output.insertBefore(pre, output.firstChild);
       }
 
       window.addEventListener("load", init, false);
 
+      var inpt = document.getElementById('inpt');
+      inpt.addEventListener("keypress", function(ev) {
+          if (ev.keyCode == 13) {
+              doSend(this.value)
+              this.value = '';
+          }
+      })
+
+      var cls = document.getElementById('cls');
+      cls.addEventListener("click", function() {
+          websocket.close();
+      });
     </script>
-
-    <h2>WebSocket Test</h2>
-
-    <div id="output"></div>
-
 </body>
 </html>

@@ -2,14 +2,16 @@ package ws
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"encoding/base64"
 	"errors"
 	"io"
-	"log"
+	_ "log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type HandlerFunc func(*Connection)
@@ -25,18 +27,8 @@ type Connection struct {
 	Extensions []string
 	MaxMsgLen  int
 	inFrame    *Frame // current incoming frame
-	outFrame   *Frame // first outgoing frame in message
+	outOpcode  uint8  // current opcode for Write call
 	rcvdClose  uint16
-}
-
-type Frame struct {
-	Fin    bool
-	Opcode byte
-	Mask   bool
-	Key    [4]byte
-	Len    int
-	r      *bufio.Reader
-	read   int
 }
 
 const (
@@ -46,6 +38,7 @@ const (
 	OPCODE_CLOSE        = 8
 	OPCODE_PING         = 9
 	OPCODE_PONG         = 10
+	_OPCODE_FAKE        = 0xFF
 )
 
 const (
@@ -67,7 +60,7 @@ const (
 	KEY_MAGIC          = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	MaxMsgLen          = 1024 * 1024 // TODO: move to server
 	ReadBufferSize     = 4 * 1024    // TODO: increase, move to server
-	CLOSE_WAIT_TIMEOUT = 5 * time.Second
+	CLOSE_WAIT_TIMEOUT = 5
 )
 
 var (
@@ -80,7 +73,8 @@ func acceptKey(key string) string {
 	buf := make([]byte, len(key)+len(KEY_MAGIC))
 	copy(buf, key)
 	copy(buf[len(key):], KEY_MAGIC)
-	return base64.StdEncoding.EncodeToString(buf)
+	buf2 := sha1.Sum(buf)
+	return base64.StdEncoding.EncodeToString(buf2[:])
 }
 
 func newConnection(server *Server, c net.Conn) *Connection {
@@ -90,11 +84,11 @@ func newConnection(server *Server, c net.Conn) *Connection {
 	wsc.r = bufio.NewReaderSize(c, ReadBufferSize)
 	wsc.w = bufio.NewWriter(c)
 	wsc.MaxMsgLen = MaxMsgLen
+	wsc.outOpcode = _OPCODE_FAKE
 	return &wsc
 }
 
 func (wsc *Connection) serve() {
-	log.Printf("serve started\n")
 	req := newHttpRequest()
 	rsp := newHttpResponse()
 	err := req.ReadFrom(wsc.r)
@@ -116,7 +110,6 @@ func (wsc *Connection) serve() {
 	} else {
 		rsp.WriteTo(wsc.w)
 	}
-	log.Printf("handler is %v\n", handler)
 	handler(wsc)
 }
 
@@ -191,196 +184,191 @@ func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) Handle
 	return handler
 }
 
-func (wsc *Connection) readFrame() (*Frame, error) {
-	var f Frame
-	var b [8]byte
-	if _, err := io.ReadFull(wsc.r, b[0:2]); err != nil {
-		return nil, err
-	}
-	f.Fin = b[0]&0x01 > 0
-	f.Opcode = b[0] >> 4
-	f.Mask = b[1]&0x01 > 0
-	f.Len = int(b[1] >> 1)
-	if f.Len == 126 {
-		if _, err := io.ReadFull(wsc.r, b[0:2]); err != nil {
-			return nil, err
-		}
-		f.Len = 0
-		f.Len += int(b[0] << 8)
-		f.Len += int(b[1])
-	} else if f.Len == 127 {
-		if _, err := io.ReadFull(wsc.r, b[:]); err != nil {
-			return nil, err
-		}
-		f.Len = 0
-		f.Len += int(b[0] << 56)
-		f.Len += int(b[1] << 48)
-		f.Len += int(b[2] << 40)
-		f.Len += int(b[3] << 32)
-		f.Len += int(b[4] << 24)
-		f.Len += int(b[5] << 16)
-		f.Len += int(b[6] << 8)
-		f.Len += int(b[7])
-		if f.Len < 0 {
-			return nil, ErrMsgTooLong
-		}
-	}
-	if f.Mask {
-		if _, err := io.ReadFull(wsc.r, f.Key[:]); err != nil {
-			return nil, err
-		}
-	}
-	f.r = wsc.r
-	return &f, nil
-}
-
-func (wsc *Connection) writeFrame(f *Frame) error {
-	b := make([]byte, 10)
-	if f.Fin {
-		b[0] |= 0x01
-	}
-	b[0] |= (f.Opcode << 4)
-	if f.Len < 126 {
-		b[1] = byte(f.Len << 1)
-		b = b[0:2]
-	} else if f.Len <= 0xFFFF {
-		b[1] = 126
-		b[2] = byte((f.Len >> 8) & 0xFF)
-		b[3] = byte(f.Len & 0xFF)
-		b = b[0:4]
-	} else {
-		b[1] = 127
-		b[2] = byte((f.Len >> 56) & 0xFF)
-		b[3] = byte((f.Len >> 48) & 0xFF)
-		b[4] = byte((f.Len >> 40) & 0xFF)
-		b[5] = byte((f.Len >> 32) & 0xFF)
-		b[6] = byte((f.Len >> 24) & 0xFF)
-		b[7] = byte((f.Len >> 16) & 0xFF)
-		b[8] = byte((f.Len >> 8) & 0xFF)
-		b[9] = byte(f.Len & 0xFF)
-	}
-	for len(b) > 0 {
-		n, err := wsc.w.Write(b)
-		if err != nil {
-			return err
-		}
-		b = b[n:]
-	}
-	return nil
-}
-
-func (f *Frame) Read(b []byte) (int, error) {
-	if f.read >= f.Len {
-		return 0, EndOfFrame
-	}
-	if need := f.Len - f.read; len(b) > need {
-		b = b[:need]
-	}
-	n, err := f.r.Read(b)
-	for i := 0; i < n; i++ {
-		b[i] ^= f.Key[(f.read+i)%4]
-	}
-	f.read += n
-	if err != nil {
-		return n, err
-	}
-	return n, nil
-}
+//////////////// Read - Write interface ////////////////////
 
 func (wsc *Connection) Read(b []byte) (int, error) {
 	var err error
 	if wsc.inFrame == nil {
-		wsc.inFrame, err = wsc.readFrame()
-		if err != nil {
+		wsc.inFrame = newFrame(wsc)
+		if err = wsc.inFrame.readHeader(); err != nil {
+			wsc.inFrame = nil
 			return 0, err
 		}
 	}
-	n, err := wsc.inFrame.Read(b)
+	n, err := wsc.inFrame.read(b)
 	if err == EndOfFrame {
 		if wsc.inFrame.Fin {
 			err = EndOfMessage
 		} else {
 			err = nil
 		}
-		return n, err
 	}
 	return n, err
 }
+
+func (wsc *Connection) StartWrite(text bool) {
+	if wsc.outOpcode != _OPCODE_FAKE {
+		panic("StartWrtite called without closing previous write sequence")
+	}
+	if text {
+		wsc.outOpcode = OPCODE_TEXT
+	} else {
+		wsc.outOpcode = OPCODE_BINARY
+	}
+}
+
+func (wsc *Connection) Write(b []byte) (int, error) {
+	if wsc.outOpcode != OPCODE_TEXT && wsc.outOpcode != OPCODE_BINARY && wsc.outOpcode != OPCODE_CONTINUATION {
+		panic("Write called with incorrect opcode. Make sure StartWirte called before")
+	}
+	f := newFrame(wsc)
+	f.Len = len(b)
+	f.Opcode = wsc.outOpcode
+	if wsc.outOpcode == OPCODE_TEXT || wsc.outOpcode == OPCODE_BINARY {
+		wsc.outOpcode = OPCODE_CONTINUATION
+	}
+	err := f.writeHeader()
+	if err != nil {
+		return 0, err
+	}
+	return f.write(b)
+}
+
+func (wsc *Connection) StopWrite() error {
+	f := newFrame(wsc)
+	f.Len = 0
+	f.Fin = true
+	f.Opcode = OPCODE_CONTINUATION
+	err := f.writeHeader()
+	if err != nil {
+		return err
+	}
+	wsc.w.Flush()
+	wsc.outOpcode = _OPCODE_FAKE
+	return nil
+}
+
+//////////////// Recv - Send interface ////////////////////
 
 func (wsc *Connection) Recv() ([]byte, error) {
 	bbuf := make([][]byte, 0, 10)
 	total := 0
 	for {
-		f, err := wsc.readFrame()
-		log.Printf("frame %v err %v", f, err)
+		f := newFrame(wsc)
+		err := f.readHeader()
 		if err != nil {
 			return nil, err
 		}
-		if f.Len+total > wsc.MaxMsgLen {
-			return nil, ErrMsgTooLong
-		}
-		buf := make([]byte, f.Len)
-		read := 0
-		for read < f.Len {
-			n, err := f.Read(buf[read:])
+
+		if f.Opcode == OPCODE_PING {
+			_, err := f.recv()
 			if err != nil {
 				return nil, err
 			}
-			read += n
+			wsc.sendPongFrame()
+			continue
+		} else if f.Opcode == OPCODE_CLOSE {
+			b, err := f.recv()
+			if err == nil && len(b) >= 2 {
+				wsc.rcvdClose = uint16(b[0])<<8 + uint16(b[1])
+				wsc.CloseWithCode(wsc.rcvdClose, "")
+			} else {
+				wsc.CloseWithCode(STATUS_PROTOCOL_ERROR, "")
+			}
+			return nil, io.EOF
 		}
-		bbuf = append(bbuf, buf)
-		total += len(buf)
+
+		if f.Len+total > wsc.MaxMsgLen {
+			return nil, ErrMsgTooLong
+		}
+		b, err := f.recv()
+		if err != nil {
+			return nil, err
+		}
+		bbuf = append(bbuf, b)
+		total += len(b)
 		if f.Fin {
 			break
 		}
 	}
-	res := make([]byte, 0, total)
+	res := make([]byte, total)
 	total = 0
-	for _, buf := range bbuf {
-		copy(res[total:], buf)
-		total += len(buf)
+	for _, b := range bbuf {
+		copy(res[total:], b)
+		total += len(b)
 	}
 	return res, nil
 }
 
-func (wsc *Connection) Write(b []byte, fin bool) error {
-	var f Frame
+func (wsc *Connection) send(b []byte, text bool) error {
+	f := newFrame(wsc)
 	f.Len = len(b)
-	f.Fin = fin
-	if wsc.outFrame == nil {
-		f.Opcode = OPCODE_BINARY // TODO: how to use ?
-		wsc.outFrame = &f
+	if text {
+		f.Opcode = OPCODE_TEXT
 	} else {
-		f.Opcode = OPCODE_CONTINUATION
+		f.Opcode = OPCODE_BINARY
 	}
-	err := wsc.writeFrame(&f)
+	f.Fin = true
+	err := f.writeHeader()
 	if err != nil {
 		return err
 	}
-	// TODO: writeAll
-	for len(b) > 0 {
-		n, err := wsc.w.Write(b)
-		if err != nil {
-			return err
-		}
-		b = b[n:]
+	_, err = f.write(b)
+	if err != nil {
+		return err
 	}
-	if fin {
-		wsc.outFrame = nil
-	}
-	return nil
+	return wsc.w.Flush()
 }
 
-func (wsc *Connection) Send(msg []byte) error {
-	return wsc.Write(msg, true)
+func (wsc *Connection) Send(b []byte) error {
+	return wsc.send(b, false)
+}
+
+func (wsc *Connection) SendText(b []byte) error {
+	return wsc.send(b, true)
+}
+
+func (wsc *Connection) sendPongFrame() error {
+	f := newFrame(wsc)
+	f.Fin = true
+	f.Opcode = OPCODE_PONG
+	err := f.writeHeader()
+	if err != nil {
+		return err
+	}
+	return wsc.w.Flush()
+}
+
+func (wsc *Connection) sendCloseFrame(code uint16, reason string) error {
+	f := newFrame(wsc)
+	f.Fin = true
+	f.Opcode = OPCODE_CLOSE
+	f.Len = 2 + len(reason)
+	err := f.writeHeader()
+	if err != nil {
+		return err
+	}
+	b := make([]byte, f.Len)
+	b[0] = byte((code >> 8) & 0xFF)
+	b[1] = byte(code & 0xFF)
+	copy(b[2:], reason)
+	err = f.send(b)
+	if err != nil {
+		return err
+	}
+	return wsc.w.Flush()
 }
 
 func (wsc *Connection) Close() error {
-	return wsc.CloseWithCode(STATUS_OK, "")
+	var st uint16 = STATUS_OK
+	if wsc.rcvdClose > 0 {
+		st = wsc.rcvdClose
+	}
+	return wsc.CloseWithCode(st, "")
 }
 
 func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
-	err := wsc.writeCloseFrame(code, reason)
+	err := wsc.sendCloseFrame(code, reason)
 	if err != nil {
 		// TODO: log error
 		wsc.c.Close()
@@ -391,42 +379,22 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 		return nil
 	}
 	// await for close from client
-	wsc.c.SetReadDeadline(time.Now() + CLOSE_WAIT_TIMEOUT)
+	wsc.c.SetReadDeadline(time.Now().Add(CLOSE_WAIT_TIMEOUT * time.Second))
 	for {
-		f, err := wsc.readFrame()
+		f := newFrame(wsc)
+		err := f.readHeader()
 		if err != nil {
-
+			wsc.c.Close()
+			if err == io.EOF {
+				return nil
+			} else {
+				return err
+			}
 		}
-		if f != nil && f.Opcode == OPCODE_CLOSE {
+		if f.Opcode == OPCODE_CLOSE {
 			wsc.c.Close()
 			return nil
 		}
-	}
-	// TODO: from here
-	if wsc.rcvdClose > 0 {
-	}
-}
-
-func (wsc *Connection) writeCloseFrame(code uint16, reason string) error {
-	var f Frame
-	f.Fin = true
-	f.Opcode = OPCODE_CLOSE
-	f.Len = 2 + len(reason)
-	err := wsc.writeFrame(&f)
-	if err != nil {
-		return err
-	}
-	b := make([]byte, f.Len)
-	b[0] = byte((code >> 8) & 0xFF)
-	b[1] = byte(code && 0xFF)
-	copy(b[2:], reason)
-	// TODO: writeAll
-	for len(b) > 0 {
-		n, err := wsc.w.Write(b)
-		if err != nil {
-			return err
-		}
-		b = b[n:]
 	}
 	return nil
 }
