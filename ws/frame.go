@@ -33,26 +33,26 @@ func (f *Frame) readHeader() error {
 	f.Fin = (b[0] & 0x80) > 0
 	f.Opcode = b[0] & 0x0f
 	f.Mask = (b[1] & 0x80) > 0
-	f.Len = int(b[1] & 0x7f)
+	f.Len = int(b[1]) & 0x7f
 	if f.Len == 126 {
 		if _, err := io.ReadFull(f.r, b[0:2]); err != nil {
 			return err
 		}
 		f.Len = 0
-		f.Len += int(b[0] << 8)
+		f.Len += int(b[0]) << 8
 		f.Len += int(b[1])
 	} else if f.Len == 127 {
 		if _, err := io.ReadFull(f.r, b[:]); err != nil {
 			return err
 		}
 		f.Len = 0
-		f.Len += int(b[0] << 56)
-		f.Len += int(b[1] << 48)
-		f.Len += int(b[2] << 40)
-		f.Len += int(b[3] << 32)
-		f.Len += int(b[4] << 24)
-		f.Len += int(b[5] << 16)
-		f.Len += int(b[6] << 8)
+		f.Len += int(b[0]) << 56
+		f.Len += int(b[1]) << 48
+		f.Len += int(b[2]) << 40
+		f.Len += int(b[3]) << 32
+		f.Len += int(b[4]) << 24
+		f.Len += int(b[5]) << 16
+		f.Len += int(b[6]) << 8
 		f.Len += int(b[7])
 		if f.Len < 0 {
 			return ErrMsgTooLong

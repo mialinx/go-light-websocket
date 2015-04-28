@@ -10,7 +10,7 @@ func echoHandler(wsc *ws.Connection) {
 	for {
 		var err error
 		msg, err := wsc.Recv()
-		log.Printf("msg1: %s err: %s", msg, err)
+		log.Printf("msg1: %d err: %s", len(msg), err)
 		if string(msg) == "enough" {
 			wsc.Close()
 			return
@@ -22,7 +22,7 @@ func echoHandler(wsc *ws.Connection) {
 		for i := 0; i < l/2; i++ {
 			msg[i], msg[l-i-1] = msg[l-i-1], msg[i]
 		}
-		log.Printf("msg2: %s", msg)
+		//log.Printf("msg2: %s", msg)
 		err = wsc.SendText(msg)
 		if err == io.EOF {
 			return

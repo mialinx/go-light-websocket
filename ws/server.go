@@ -12,9 +12,11 @@ const (
 )
 
 type Server struct {
-	Addr      string
-	Origins   []string
-	Handshake HandshakeFunc
+	Addr            string
+	Handshake       HandshakeFunc
+	MaxMsgLen       int
+	ReadBufferSize  int
+	WriteBufferSize int
 }
 
 func (s *Server) serve(conn net.Conn) {

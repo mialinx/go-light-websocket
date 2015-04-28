@@ -10,7 +10,7 @@
     <h2>WebSocket Test</h2>
 
     <input type="text" name="msg" id="inpt">
-    <br>
+    <button id="snd">Send</button>
     <button id="cls">Close</button>
 
     <div id="output"></div>
@@ -23,6 +23,14 @@
       {
         output = document.getElementById("output");
         testWebSocket();
+      }
+
+      function fake(n) { 
+          var x = ""; 
+          for (var j = 0; j < n; j++) { 
+              x += Math.round(Math.random()*9) 
+          } 
+          return x
       }
 
       function testWebSocket()
@@ -59,7 +67,7 @@
 
       function onMessage(evt)
       {
-        writeToScreen('<span style="color: blue;">RESPONSE: ' + evt.data+'</span>');
+        writeToScreen('<span style="color: blue;">RESPONSE: ' + cut(evt.data) + '</span>');
       }
 
       function onError(evt)
@@ -69,8 +77,15 @@
 
       function doSend(message)
       {
-        writeToScreen("SENT: " + message);
+        writeToScreen("SENT: " + cut(message));
         websocket.send(message);
+      }
+
+      function cut(message) {
+        if (message.length > 100) {
+            return  message.substr(0,50) + '...' + message.substr(message.length - 50, 50) + ' (' + message.length + ')';
+        }
+        return message;
       }
 
       function writeToScreen(message)
@@ -89,12 +104,18 @@
               doSend(this.value)
               this.value = '';
           }
-      })
+      });
+
+      var snd = document.getElementById('snd');
+      snd.addEventListener("click", function(ev) {
+          doSend(inpt.value);
+      });
 
       var cls = document.getElementById('cls');
       cls.addEventListener("click", function() {
           websocket.close();
       });
+
     </script>
 </body>
 </html>

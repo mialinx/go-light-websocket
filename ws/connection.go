@@ -22,8 +22,7 @@ type Connection struct {
 	server     *Server
 	r          *bufio.Reader
 	w          *bufio.Writer
-	c          net.Conn
-	Key        [16]byte
+	conn       net.Conn
 	Extensions []string
 	MaxMsgLen  int
 	inFrame    *Frame // current incoming frame
@@ -57,10 +56,11 @@ const (
 )
 
 const (
-	KEY_MAGIC          = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	MaxMsgLen          = 1024 * 1024 // TODO: move to server
-	ReadBufferSize     = 4 * 1024    // TODO: increase, move to server
-	CLOSE_WAIT_TIMEOUT = 5
+	KeyMagic         = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	MaxMsgLen        = 1024 * 1024 // TODO: move to server
+	ReadBufferSize   = 1 * 1024    // TODO: increase, move to server
+	WriteBufferSize  = 1 * 1024    // TODO: increase, move to server
+	CloseWaitTimeout = 5
 )
 
 var (
@@ -70,19 +70,19 @@ var (
 )
 
 func acceptKey(key string) string {
-	buf := make([]byte, len(key)+len(KEY_MAGIC))
+	buf := make([]byte, len(key)+len(KeyMagic))
 	copy(buf, key)
-	copy(buf[len(key):], KEY_MAGIC)
+	copy(buf[len(key):], KeyMagic)
 	buf2 := sha1.Sum(buf)
 	return base64.StdEncoding.EncodeToString(buf2[:])
 }
 
-func newConnection(server *Server, c net.Conn) *Connection {
+func newConnection(server *Server, conn net.Conn) *Connection {
 	var wsc Connection
 	wsc.server = server
-	wsc.c = c
-	wsc.r = bufio.NewReaderSize(c, ReadBufferSize)
-	wsc.w = bufio.NewWriter(c)
+	wsc.conn = conn
+	wsc.r = bufio.NewReaderSize(conn, ReadBufferSize)
+	wsc.w = bufio.NewWriterSize(conn, WriteBufferSize)
 	wsc.MaxMsgLen = MaxMsgLen
 	wsc.outOpcode = _OPCODE_FAKE
 	return &wsc
@@ -97,7 +97,7 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
 		rsp.WriteTo(wsc.w)
-		wsc.c.Close()
+		wsc.conn.Close()
 		return
 	}
 	handler := wsc.httpHandshake(req, rsp)
@@ -105,7 +105,7 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
 		rsp.WriteTo(wsc.w)
-		wsc.c.Close()
+		wsc.conn.Close()
 		return
 	} else {
 		rsp.WriteTo(wsc.w)
@@ -134,15 +134,7 @@ func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) Handle
 		rsp.Body = "'Upgrade: websocket' header missed"
 		return nil
 	}
-	if key := req.Headers["Sec-Websocket-Key"]; key != "" {
-		key, err := base64.StdEncoding.DecodeString(key)
-		if err != nil || len(key) != 16 {
-			rsp.Status = http.StatusBadRequest
-			rsp.Body = "Invalid 'Sec-WebSocket-Key' header value"
-			return nil
-		}
-		copy(wsc.Key[:], key)
-	} else {
+	if req.Headers["Sec-Websocket-Key"] == "" {
 		rsp.Status = http.StatusBadRequest
 		rsp.Body = "'Sec-Websocket-Key' header missed"
 		return nil
@@ -170,9 +162,6 @@ func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) Handle
 		if len(wsc.Extensions) > 0 {
 			// TODO: запилить экстеншенов что ли
 		}
-	}
-	if origin := req.Headers["Origin"]; origin != "" && len(wsc.server.Origins) > 0 {
-		// TODO: check CORS
 	}
 	handler := wsc.server.Handshake(req, rsp)
 	if handler != nil {
@@ -259,7 +248,7 @@ func (wsc *Connection) Recv() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-
+		//log.Printf("recv frame %s %s", f, err)
 		if f.Opcode == OPCODE_PING {
 			_, err := f.recv()
 			if err != nil {
@@ -282,6 +271,7 @@ func (wsc *Connection) Recv() ([]byte, error) {
 			return nil, ErrMsgTooLong
 		}
 		b, err := f.recv()
+		//log.Printf("recv frame body %d %s", len(b), err)
 		if err != nil {
 			return nil, err
 		}
@@ -371,20 +361,20 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 	err := wsc.sendCloseFrame(code, reason)
 	if err != nil {
 		// TODO: log error
-		wsc.c.Close()
+		wsc.conn.Close()
 		return err
 	}
 	if wsc.rcvdClose > 0 {
-		wsc.c.Close()
+		wsc.conn.Close()
 		return nil
 	}
 	// await for close from client
-	wsc.c.SetReadDeadline(time.Now().Add(CLOSE_WAIT_TIMEOUT * time.Second))
+	wsc.conn.SetReadDeadline(time.Now().Add(CloseWaitTimeout * time.Second))
 	for {
 		f := newFrame(wsc)
 		err := f.readHeader()
 		if err != nil {
-			wsc.c.Close()
+			wsc.conn.Close()
 			if err == io.EOF {
 				return nil
 			} else {
@@ -392,7 +382,7 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 			}
 		}
 		if f.Opcode == OPCODE_CLOSE {
-			wsc.c.Close()
+			wsc.conn.Close()
 			return nil
 		}
 	}
