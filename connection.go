@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	_ "log"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -56,11 +56,12 @@ const (
 )
 
 const (
-	KeyMagic         = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	MaxMsgLen        = 1024 * 1024 // TODO: move to server
-	ReadBufferSize   = 1 * 1024    // TODO: increase, move to server
-	WriteBufferSize  = 1 * 1024    // TODO: increase, move to server
-	CloseWaitTimeout = 5
+	KeyMagic               = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	MaxControlFrameLength  = 125
+	CloseWaitTimeout       = 5
+	DefaultMaxMsgLen       = 1024 * 1024
+	DefaultReadBufferSize  = 2 * 1024
+	DefaultWriteBufferSize = 2 * 1024
 )
 
 var (
@@ -81,9 +82,26 @@ func newConnection(server *Server, conn net.Conn) *Connection {
 	var wsc Connection
 	wsc.server = server
 	wsc.conn = conn
-	wsc.r = bufio.NewReaderSize(conn, ReadBufferSize)
-	wsc.w = bufio.NewWriterSize(conn, WriteBufferSize)
-	wsc.MaxMsgLen = MaxMsgLen
+
+	rbs := server.ReadBufferSize
+	if rbs == 0 {
+		rbs = DefaultReadBufferSize
+	}
+	wsc.r = bufio.NewReaderSize(conn, rbs)
+	//wsc.conn.SetReadBuffer(rbs)
+
+	wbs := server.WriteBufferSize
+	if wbs == 0 {
+		wbs = DefaultWriteBufferSize
+	}
+	wsc.w = bufio.NewWriterSize(conn, wbs)
+	//wsc.conn.SetWriteBuffer(wbs)
+
+	mml := server.MaxMsgLen
+	if mml == 0 {
+		mml = DefaultMaxMsgLen
+	}
+	wsc.MaxMsgLen = mml
 	wsc.outOpcode = _OPCODE_FAKE
 	return &wsc
 }
@@ -180,6 +198,7 @@ func (wsc *Connection) Read(b []byte) (int, error) {
 	var err error
 	if wsc.inFrame == nil {
 		wsc.inFrame = newFrame(wsc)
+		// TODO: handle control frames
 		if err = wsc.inFrame.readHeader(); err != nil {
 			wsc.inFrame = nil
 			return 0, err
@@ -250,16 +269,14 @@ func (wsc *Connection) Recv() ([]byte, error) {
 			return nil, err
 		}
 		if f.Opcode == OPCODE_PING {
-			_, err := f.recv()
+			b, err := f.recv()
 			if err != nil {
 				return nil, err
 			}
-			//log.Printf("ping frame received")
-			wsc.sendPongFrame()
+			wsc.SendPong(b)
 			continue
 		} else if f.Opcode == OPCODE_CLOSE {
 			b, err := f.recv()
-			//log.Printf("close frame received")
 			if err == nil && len(b) >= 2 {
 				wsc.rcvdClose = uint16(b[0])<<8 + uint16(b[1])
 				wsc.CloseWithCode(wsc.rcvdClose, "")
@@ -268,7 +285,9 @@ func (wsc *Connection) Recv() ([]byte, error) {
 			}
 			return nil, io.EOF
 		}
-
+		if err != nil {
+			return nil, err
+		}
 		if f.Len+total > wsc.MaxMsgLen {
 			return nil, ErrMsgTooLong
 		}
@@ -292,13 +311,14 @@ func (wsc *Connection) Recv() ([]byte, error) {
 	return res, nil
 }
 
-func (wsc *Connection) send(b []byte, text bool) error {
+func (wsc *Connection) send(opcode uint8, b []byte) error {
 	f := newFrame(wsc)
 	f.Len = len(b)
-	if text {
-		f.Opcode = OPCODE_TEXT
-	} else {
-		f.Opcode = OPCODE_BINARY
+	f.Opcode = opcode
+	if opcode == OPCODE_PING || opcode == OPCODE_PONG || opcode == OPCODE_CLOSE {
+		if f.Len > MaxControlFrameLength {
+			log.Panicf("control frame %d exceeds data max data length %d", f.Opcode, f.Len)
+		}
 	}
 	f.Fin = true
 	err := f.writeHeader()
@@ -313,42 +333,27 @@ func (wsc *Connection) send(b []byte, text bool) error {
 }
 
 func (wsc *Connection) Send(b []byte) error {
-	return wsc.send(b, false)
+	return wsc.send(OPCODE_BINARY, b)
 }
 
 func (wsc *Connection) SendText(b []byte) error {
-	return wsc.send(b, true)
+	return wsc.send(OPCODE_TEXT, b)
 }
 
-func (wsc *Connection) sendPongFrame() error {
-	f := newFrame(wsc)
-	f.Fin = true
-	f.Opcode = OPCODE_PONG
-	err := f.writeHeader()
-	if err != nil {
-		return err
-	}
-	return wsc.w.Flush()
+func (wsc *Connection) SendPong(b []byte) error {
+	return wsc.send(OPCODE_PONG, b)
 }
 
-func (wsc *Connection) sendCloseFrame(code uint16, reason string) error {
-	f := newFrame(wsc)
-	f.Fin = true
-	f.Opcode = OPCODE_CLOSE
-	f.Len = 2 + len(reason)
-	err := f.writeHeader()
-	if err != nil {
-		return err
-	}
-	b := make([]byte, f.Len)
+func (wsc *Connection) SendPing(b []byte) error {
+	return wsc.send(OPCODE_PING, b)
+}
+
+func (wsc *Connection) sendClose(code uint16, reason string) error {
+	b := make([]byte, 2+len(reason))
 	b[0] = byte((code >> 8) & 0xFF)
 	b[1] = byte(code & 0xFF)
 	copy(b[2:], reason)
-	err = f.send(b)
-	if err != nil {
-		return err
-	}
-	return wsc.w.Flush()
+	return wsc.send(OPCODE_CLOSE, b)
 }
 
 func (wsc *Connection) Close() error {
@@ -360,7 +365,7 @@ func (wsc *Connection) Close() error {
 }
 
 func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
-	err := wsc.sendCloseFrame(code, reason)
+	err := wsc.sendClose(code, reason)
 	if err != nil {
 		// TODO: log error
 		wsc.conn.Close()
@@ -391,7 +396,7 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 	return nil
 }
 
-// Toools
+//////////////// Options ////////////////////
 
 func (wsc *Connection) SetReadDeadline(t time.Time) error {
 	return wsc.conn.SetReadDeadline(t)
