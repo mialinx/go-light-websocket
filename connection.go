@@ -104,6 +104,7 @@ func (wsc *Connection) serve() {
 	if handler == nil {
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
+		//log.Printf("hs rsp %s", rsp)
 		rsp.WriteTo(wsc.w)
 		wsc.conn.Close()
 		return
@@ -248,16 +249,17 @@ func (wsc *Connection) Recv() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		//log.Printf("recv frame %s %s", f, err)
 		if f.Opcode == OPCODE_PING {
 			_, err := f.recv()
 			if err != nil {
 				return nil, err
 			}
+			//log.Printf("ping frame received")
 			wsc.sendPongFrame()
 			continue
 		} else if f.Opcode == OPCODE_CLOSE {
 			b, err := f.recv()
+			//log.Printf("close frame received")
 			if err == nil && len(b) >= 2 {
 				wsc.rcvdClose = uint16(b[0])<<8 + uint16(b[1])
 				wsc.CloseWithCode(wsc.rcvdClose, "")
@@ -369,7 +371,7 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 		return nil
 	}
 	// await for close from client
-	wsc.conn.SetReadDeadline(time.Now().Add(CloseWaitTimeout * time.Second))
+	wsc.SetReadDeadlineD(CloseWaitTimeout * time.Second)
 	for {
 		f := newFrame(wsc)
 		err := f.readHeader()
@@ -387,4 +389,22 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 		}
 	}
 	return nil
+}
+
+// Toools
+
+func (wsc *Connection) SetReadDeadline(t time.Time) error {
+	return wsc.conn.SetReadDeadline(t)
+}
+
+func (wsc *Connection) SetReadDeadlineD(d time.Duration) error {
+	return wsc.conn.SetReadDeadline(time.Now().Add(d))
+}
+
+func (wsc *Connection) SetWriteDeadline(t time.Time) error {
+	return wsc.conn.SetWriteDeadline(t)
+}
+
+func (wsc *Connection) SetWriteDeadlineD(d time.Duration) error {
+	return wsc.conn.SetWriteDeadline(time.Now().Add(d))
 }

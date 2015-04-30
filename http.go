@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -19,6 +20,7 @@ type HttpRequest struct {
 	Version string
 	Uri     string
 	Headers map[string]string
+	form    map[string]string
 }
 
 type HttpResponse struct {
@@ -111,6 +113,23 @@ func (req *HttpRequest) ReadFrom(r *bufio.Reader) error {
 		return ErrInvalidSyntax
 	}
 	return nil
+}
+
+func (req *HttpRequest) FormValue(k string) string {
+	if req.form == nil {
+		req.form = make(map[string]string, 5)
+		// parse form light
+		if li := strings.LastIndex(req.Uri, "?"); li > -1 {
+			qs := req.Uri[li+1:]
+			for _, pair := range strings.Split(qs, "&") {
+				kv := strings.SplitN(pair, "=", 2)
+				k, _ := url.QueryUnescape(kv[0])
+				v, _ := url.QueryUnescape(kv[1])
+				req.form[k] = v
+			}
+		}
+	}
+	return req.form[k]
 }
 
 func newHttpResponse() *HttpResponse {
