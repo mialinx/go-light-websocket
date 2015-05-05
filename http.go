@@ -38,9 +38,7 @@ func newHttpRequest() *HttpRequest {
 
 func readLine(r *bufio.Reader) (string, error) {
 	line, err := r.ReadSlice('\n')
-	if err == bufio.ErrBufferFull {
-		return "", ErrRequestLineTooLong
-	} else if err != nil {
+	if err != nil {
 		return "", err
 	}
 	line = line[0 : len(line)-1]
@@ -75,7 +73,9 @@ func normalizeHeader(h string) string {
 
 func (req *HttpRequest) ReadFrom(r *bufio.Reader) error {
 	line, err := readLine(r)
-	if err != nil {
+	if err == bufio.ErrBufferFull {
+		return ErrRequestLineTooLong
+	} else if err != nil {
 		return err
 	}
 	parts := strings.Split(line, " ")
@@ -89,7 +89,9 @@ func (req *HttpRequest) ReadFrom(r *bufio.Reader) error {
 	const lws = "\t "
 	for {
 		line, err := readLine(r)
-		if err != nil {
+		if err == bufio.ErrBufferFull {
+			return ErrHeaderLineTooLong
+		} else if err != nil {
 			return err
 		}
 		if line == "" {

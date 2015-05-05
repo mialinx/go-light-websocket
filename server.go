@@ -17,6 +17,7 @@ type Server struct {
 	MaxMsgLen       int
 	ReadBufferSize  int
 	WriteBufferSize int
+	//Stats           Stats
 }
 
 func (s *Server) serve(conn net.Conn) {

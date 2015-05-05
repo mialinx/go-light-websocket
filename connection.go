@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -25,8 +26,7 @@ type Connection struct {
 	conn       net.Conn
 	Extensions []string
 	MaxMsgLen  int
-	inFrame    *Frame // current incoming frame
-	outOpcode  uint8  // current opcode for Write call
+	LogLevel   uint8
 	rcvdClose  uint16
 }
 
@@ -37,7 +37,6 @@ const (
 	OPCODE_CLOSE        = 8
 	OPCODE_PING         = 9
 	OPCODE_PONG         = 10
-	_OPCODE_FAKE        = 0xFF
 )
 
 const (
@@ -102,7 +101,6 @@ func newConnection(server *Server, conn net.Conn) *Connection {
 		mml = DefaultMaxMsgLen
 	}
 	wsc.MaxMsgLen = mml
-	wsc.outOpcode = _OPCODE_FAKE
 	return &wsc
 }
 
@@ -111,6 +109,7 @@ func (wsc *Connection) serve() {
 	rsp := newHttpResponse()
 	err := req.ReadFrom(wsc.r)
 	if err != nil {
+		wsc.LogError("http parse %s", err)
 		rsp.Status = http.StatusBadRequest
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
@@ -120,15 +119,16 @@ func (wsc *Connection) serve() {
 	}
 	handler := wsc.httpHandshake(req, rsp)
 	if handler == nil {
+		wsc.LogError("handshake failed %d: %s", rsp.Status, rsp.Body)
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
-		//log.Printf("hs rsp %s", rsp)
 		rsp.WriteTo(wsc.w)
 		wsc.conn.Close()
 		return
 	} else {
 		rsp.WriteTo(wsc.w)
 	}
+	wsc.LogInfo("connection established")
 	handler(wsc)
 }
 
@@ -194,20 +194,40 @@ func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) Handle
 
 //////////////// Read - Write interface ////////////////////
 
-func (wsc *Connection) Read(b []byte) (int, error) {
-	var err error
-	if wsc.inFrame == nil {
-		wsc.inFrame = newFrame(wsc)
+type MessageReader struct {
+	wsc    *Connection
+	frame  *Frame
+	useEom bool
+	closed bool
+}
+
+func (wsc *Connection) NewReader(useEom bool) *MessageReader {
+	return &MessageReader{wsc: wsc, useEom: useEom}
+}
+
+func (mr *MessageReader) Read(b []byte) (int, error) {
+	if mr.closed {
+		return 0, io.EOF
+	}
+	if mr.frame == nil {
+		mr.frame = newFrame(mr.wsc)
 		// TODO: handle control frames
-		if err = wsc.inFrame.readHeader(); err != nil {
-			wsc.inFrame = nil
+		if err := mr.frame.readHeader(); err != nil {
+			mr.closed = true
 			return 0, err
 		}
+		mr.wsc.LogDebug("frame header received: %s", mr.frame)
 	}
-	n, err := wsc.inFrame.read(b)
+	n, err := mr.frame.read(b)
+	mr.wsc.LogDebug("frame body read: %d", n)
 	if err == EndOfFrame {
-		if wsc.inFrame.Fin {
-			err = EndOfMessage
+		if mr.frame.Fin {
+			if mr.useEom {
+				err = EndOfMessage
+			} else {
+				err = io.EOF
+			}
+			mr.closed = true
 		} else {
 			err = nil
 		}
@@ -215,36 +235,45 @@ func (wsc *Connection) Read(b []byte) (int, error) {
 	return n, err
 }
 
-func (wsc *Connection) StartWrite(text bool) {
-	if wsc.outOpcode != _OPCODE_FAKE {
-		panic("StartWrtite called without closing previous write sequence")
-	}
-	if text {
-		wsc.outOpcode = OPCODE_TEXT
-	} else {
-		wsc.outOpcode = OPCODE_BINARY
-	}
+type MessageWriter struct {
+	wsc    *Connection
+	opcode uint8
+	closed bool
 }
 
-func (wsc *Connection) Write(b []byte) (int, error) {
-	if wsc.outOpcode != OPCODE_TEXT && wsc.outOpcode != OPCODE_BINARY && wsc.outOpcode != OPCODE_CONTINUATION {
-		panic("Write called with incorrect opcode. Make sure StartWirte called before")
+func (wsc *Connection) NewWriter(binary bool) *MessageWriter {
+	mw := &MessageWriter{wsc: wsc}
+	if binary {
+		mw.opcode = OPCODE_BINARY
+	} else {
+		mw.opcode = OPCODE_TEXT
 	}
-	f := newFrame(wsc)
+	return mw
+}
+
+func (mw *MessageWriter) Write(b []byte) (int, error) {
+	if mw.closed {
+		return 0, io.EOF
+	}
+	f := newFrame(mw.wsc)
 	f.Len = len(b)
-	f.Opcode = wsc.outOpcode
-	if wsc.outOpcode == OPCODE_TEXT || wsc.outOpcode == OPCODE_BINARY {
-		wsc.outOpcode = OPCODE_CONTINUATION
+	f.Opcode = mw.opcode
+	if mw.opcode == OPCODE_TEXT || mw.opcode == OPCODE_BINARY {
+		mw.opcode = OPCODE_CONTINUATION
 	}
 	err := f.writeHeader()
 	if err != nil {
 		return 0, err
 	}
-	return f.write(b)
+	mw.wsc.LogDebug("frame header sent: %s", f)
+	n, err := f.write(b)
+	mw.wsc.LogDebug("frame body write: %d", n)
+	return n, err
 }
 
-func (wsc *Connection) StopWrite() error {
-	f := newFrame(wsc)
+func (mw *MessageWriter) Close() error {
+	mw.closed = true
+	f := newFrame(mw.wsc)
 	f.Len = 0
 	f.Fin = true
 	f.Opcode = OPCODE_CONTINUATION
@@ -252,8 +281,8 @@ func (wsc *Connection) StopWrite() error {
 	if err != nil {
 		return err
 	}
-	wsc.w.Flush()
-	wsc.outOpcode = _OPCODE_FAKE
+	mw.wsc.LogDebug("frame header sent: %s", f)
+	mw.wsc.w.Flush()
 	return nil
 }
 
@@ -268,6 +297,7 @@ func (wsc *Connection) Recv() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		wsc.LogDebug("frame header received: %s", f)
 		if f.Opcode == OPCODE_PING {
 			b, err := f.recv()
 			if err != nil {
@@ -292,10 +322,10 @@ func (wsc *Connection) Recv() ([]byte, error) {
 			return nil, ErrMsgTooLong
 		}
 		b, err := f.recv()
-		//log.Printf("recv frame body %d %s", len(b), err)
 		if err != nil {
 			return nil, err
 		}
+		wsc.LogDebug("frame body received: %d", len(b))
 		bbuf = append(bbuf, b)
 		total += len(b)
 		if f.Fin {
@@ -317,7 +347,7 @@ func (wsc *Connection) send(opcode uint8, b []byte) error {
 	f.Opcode = opcode
 	if opcode == OPCODE_PING || opcode == OPCODE_PONG || opcode == OPCODE_CLOSE {
 		if f.Len > MaxControlFrameLength {
-			log.Panicf("control frame %d exceeds data max data length %d", f.Opcode, f.Len)
+			panic(fmt.Sprintf("control frame %d exceeds data max data length %d", f.Opcode, f.Len))
 		}
 	}
 	f.Fin = true
@@ -325,10 +355,12 @@ func (wsc *Connection) send(opcode uint8, b []byte) error {
 	if err != nil {
 		return err
 	}
+	wsc.LogDebug("frame header sent: %s", f)
 	_, err = f.write(b)
 	if err != nil {
 		return err
 	}
+	wsc.LogDebug("frame body sent: %d", len(b))
 	return wsc.w.Flush()
 }
 
@@ -412,4 +444,50 @@ func (wsc *Connection) SetWriteDeadline(t time.Time) error {
 
 func (wsc *Connection) SetWriteDeadlineD(d time.Duration) error {
 	return wsc.conn.SetWriteDeadline(time.Now().Add(d))
+}
+
+//////////////// Logging ////////////////////
+
+const (
+	LOG_ERROR = 0
+	LOG_WARN  = 1
+	LOG_INFO  = 2
+	LOG_DEBUG = 3
+)
+
+var logNames map[int]string = map[int]string{
+	LOG_ERROR: "ERROR",
+	LOG_WARN:  "WARN",
+	LOG_INFO:  "INFO",
+	LOG_DEBUG: "DEBUG",
+}
+
+func (wsc *Connection) Log(level uint8, fmt string, args ...interface{}) {
+	if level > wsc.LogLevel {
+		return
+	}
+	addr := wsc.conn.RemoteAddr()
+	// facepalm
+	all := make([]interface{}, 2+len(args))
+	all[0] = addr
+	all[1] = level
+	copy(all[2:], args)
+	// facepalm is over
+	log.Printf("%s %s "+fmt+"\n", all...)
+}
+
+func (wsc *Connection) LogError(fmt string, args ...interface{}) {
+	wsc.Log(LOG_ERROR, fmt, args)
+}
+
+func (wsc *Connection) LogWarn(fmt string, args ...interface{}) {
+	wsc.Log(LOG_WARN, fmt, args)
+}
+
+func (wsc *Connection) LogInfo(fmt string, args ...interface{}) {
+	wsc.Log(LOG_INFO, fmt, args)
+}
+
+func (wsc *Connection) LogDebug(fmt string, args ...interface{}) {
+	wsc.Log(LOG_DEBUG, fmt, args)
 }
