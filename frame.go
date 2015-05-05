@@ -14,6 +14,7 @@ type Frame struct {
 	Len    int
 	r      *bufio.Reader
 	w      *bufio.Writer
+	stats  *Stats
 	done   int
 }
 
@@ -22,7 +23,11 @@ func (f *Frame) String() string {
 }
 
 func newFrame(wsc *Connection) *Frame {
-	return &Frame{r: wsc.r, w: wsc.w}
+	return &Frame{
+		r:     wsc.r,
+		w:     wsc.w,
+		stats: wsc.server.Stats,
+	}
 }
 
 func (f *Frame) readHeader() error {
@@ -63,6 +68,7 @@ func (f *Frame) readHeader() error {
 			return err
 		}
 	}
+	f.stats.add(eventInFrame{})
 	return nil
 }
 
@@ -98,6 +104,7 @@ func (f *Frame) writeHeader() error {
 		}
 		b = b[n:]
 	}
+	f.stats.add(eventOutFrame{})
 	return nil
 }
 

@@ -25,43 +25,9 @@ type Connection struct {
 	w          *bufio.Writer
 	conn       net.Conn
 	Extensions []string
-	MaxMsgLen  int
 	LogLevel   uint8
 	rcvdClose  uint16
 }
-
-const (
-	OPCODE_CONTINUATION = 0
-	OPCODE_TEXT         = 1
-	OPCODE_BINARY       = 2
-	OPCODE_CLOSE        = 8
-	OPCODE_PING         = 9
-	OPCODE_PONG         = 10
-)
-
-const (
-	STATUS_OK                = 1000
-	STATUS_GOAWAY            = 1001
-	STATUS_PROTOCOL_ERROR    = 1002
-	STATUS_UNACCEPTABLE_DATA = 1003
-	STATUS_RESERVED          = 1004
-	STATUS_NOSTATUS          = 1005
-	STATUS_BAD_CLOSED        = 1006
-	STATUS_BAD_DATA          = 1007
-	STATUS_POLICY            = 1008
-	STATUS_TOO_BIG           = 1009
-	STATUS_NEED_EXTENSION    = 1010
-	STATUS_INTERNAL          = 1011
-)
-
-const (
-	KeyMagic               = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	MaxControlFrameLength  = 125
-	CloseWaitTimeout       = 5
-	DefaultMaxMsgLen       = 1024 * 1024
-	DefaultReadBufferSize  = 2 * 1024
-	DefaultWriteBufferSize = 2 * 1024
-)
 
 var (
 	ErrMsgTooLong = errors.New("incoming frame is too long")
@@ -78,30 +44,24 @@ func acceptKey(key string) string {
 }
 
 func newConnection(server *Server, conn net.Conn) *Connection {
-	var wsc Connection
-	wsc.server = server
-	wsc.conn = conn
-
-	rbs := server.ReadBufferSize
-	if rbs == 0 {
-		rbs = DefaultReadBufferSize
+	wsc := &Connection{
+		server: server,
+		conn:   conn,
 	}
-	wsc.r = bufio.NewReaderSize(conn, rbs)
-	//wsc.conn.SetReadBuffer(rbs)
-
-	wbs := server.WriteBufferSize
-	if wbs == 0 {
-		wbs = DefaultWriteBufferSize
+	var r io.Reader
+	var w io.Writer
+	if server.Config.IOStatistics {
+		r = &ReaderWithStats{r: conn, stats: server.Stats}
+		w = &WriterWithStats{w: conn, stats: server.Stats}
+	} else {
+		r = conn
+		w = conn
 	}
-	wsc.w = bufio.NewWriterSize(conn, wbs)
-	//wsc.conn.SetWriteBuffer(wbs)
-
-	mml := server.MaxMsgLen
-	if mml == 0 {
-		mml = DefaultMaxMsgLen
-	}
-	wsc.MaxMsgLen = mml
-	return &wsc
+	wsc.r = bufio.NewReaderSize(r, server.Config.ReadBufferSize)
+	//wsc.conn.SetReadBuffer(server.Config.ReadBufferSize)
+	wsc.w = bufio.NewWriterSize(w, server.Config.WriteBufferSize)
+	//wsc.conn.SetWriteBuffer(server.Config.WriteBufferSize)
+	return wsc
 }
 
 func (wsc *Connection) serve() {
@@ -115,6 +75,7 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Connection"] = "close"
 		rsp.WriteTo(wsc.w)
 		wsc.conn.Close()
+		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	}
 	handler := wsc.httpHandshake(req, rsp)
@@ -124,11 +85,13 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Connection"] = "close"
 		rsp.WriteTo(wsc.w)
 		wsc.conn.Close()
+		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	} else {
 		rsp.WriteTo(wsc.w)
 	}
 	wsc.LogInfo("connection established")
+	wsc.server.Stats.add(eventHandshake{})
 	handler(wsc)
 }
 
@@ -318,7 +281,7 @@ func (wsc *Connection) Recv() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if f.Len+total > wsc.MaxMsgLen {
+		if f.Len+total > wsc.server.Config.MaxMsgLen {
 			return nil, ErrMsgTooLong
 		}
 		b, err := f.recv()
@@ -408,7 +371,7 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 		return nil
 	}
 	// await for close from client
-	wsc.SetReadDeadlineD(CloseWaitTimeout * time.Second)
+	wsc.SetReadDeadlineD(CloseWaitTimeout)
 	for {
 		f := newFrame(wsc)
 		err := f.readHeader()
