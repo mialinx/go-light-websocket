@@ -37,15 +37,18 @@ func newHttpRequest() *HttpRequest {
 }
 
 func readLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadSlice('\n')
-	if err != nil {
-		return "", err
+	var bbuf []string
+	for {
+		buf, isPrefix, err := r.ReadLine()
+		if err != nil {
+			return "", err
+		}
+		bbuf = append(bbuf, string(buf))
+		if !isPrefix {
+			break
+		}
 	}
-	line = line[0 : len(line)-1]
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		line = line[0 : len(line)-1]
-	}
-	return string(line), nil
+	return strings.Join(bbuf, ""), nil
 }
 
 func normalizeHeader(h string) string {

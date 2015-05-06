@@ -10,12 +10,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 )
 
-type HandlerFunc func(*Connection)
+type HandlerFunc func(*Connection) error
 
 type HandshakeFunc func(*HttpRequest, *HttpResponse) HandlerFunc
 
@@ -23,7 +24,7 @@ type Connection struct {
 	server     *Server
 	r          *bufio.Reader
 	w          *bufio.Writer
-	conn       net.Conn
+	conn       *net.TCPConn
 	Extensions []string
 	LogLevel   uint8
 	rcvdClose  uint16
@@ -43,10 +44,11 @@ func acceptKey(key string) string {
 	return base64.StdEncoding.EncodeToString(buf2[:])
 }
 
-func newConnection(server *Server, conn net.Conn) *Connection {
+func newConnection(server *Server, conn *net.TCPConn) *Connection {
 	wsc := &Connection{
-		server: server,
-		conn:   conn,
+		server:   server,
+		conn:     conn,
+		LogLevel: server.Config.LogLevel,
 	}
 	var r io.Reader
 	var w io.Writer
@@ -58,21 +60,32 @@ func newConnection(server *Server, conn net.Conn) *Connection {
 		w = conn
 	}
 	wsc.r = bufio.NewReaderSize(r, server.Config.ReadBufferSize)
-	//wsc.conn.SetReadBuffer(server.Config.ReadBufferSize)
+	wsc.conn.SetReadBuffer(server.Config.ReadBufferSize)
 	wsc.w = bufio.NewWriterSize(w, server.Config.WriteBufferSize)
-	//wsc.conn.SetWriteBuffer(server.Config.WriteBufferSize)
+	wsc.conn.SetWriteBuffer(server.Config.WriteBufferSize)
 	return wsc
 }
 
 func (wsc *Connection) serve() {
+	defer func() {
+		if err := recover(); err != nil {
+			wsc.LogError("panic: %s\n%s", err, debug.Stack())
+		}
+		wsc.LogInfo("connection closed")
+		wsc.server.Stats.add(eventClose{})
+	}()
+	wsc.LogInfo("connection established")
+	wsc.server.Stats.add(eventConnect{})
 	req := newHttpRequest()
 	rsp := newHttpResponse()
+	wsc.SetReadTimeout(wsc.server.Config.HandshakeReadTimeout)
 	err := req.ReadFrom(wsc.r)
 	if err != nil {
 		wsc.LogError("http parse %s", err)
 		rsp.Status = http.StatusBadRequest
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
+		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
 		wsc.conn.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
@@ -83,16 +96,20 @@ func (wsc *Connection) serve() {
 		wsc.LogError("handshake failed %d: %s", rsp.Status, rsp.Body)
 		rsp.Headers["Content-Type"] = "text/plain"
 		rsp.Headers["Connection"] = "close"
+		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
 		wsc.conn.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	} else {
+		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
 	}
-	wsc.LogInfo("connection established")
 	wsc.server.Stats.add(eventHandshake{})
-	handler(wsc)
+	err = handler(wsc)
+	if err != nil && err != io.EOF {
+		wsc.LogError("err: %s", err)
+	}
 }
 
 func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) HandlerFunc {
@@ -362,7 +379,6 @@ func (wsc *Connection) Close() error {
 func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 	err := wsc.sendClose(code, reason)
 	if err != nil {
-		// TODO: log error
 		wsc.conn.Close()
 		return err
 	}
@@ -371,7 +387,7 @@ func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
 		return nil
 	}
 	// await for close from client
-	wsc.SetReadDeadlineD(CloseWaitTimeout)
+	wsc.SetReadTimeout(wsc.server.Config.CloseTimeout)
 	for {
 		f := newFrame(wsc)
 		err := f.readHeader()
@@ -397,16 +413,24 @@ func (wsc *Connection) SetReadDeadline(t time.Time) error {
 	return wsc.conn.SetReadDeadline(t)
 }
 
-func (wsc *Connection) SetReadDeadlineD(d time.Duration) error {
-	return wsc.conn.SetReadDeadline(time.Now().Add(d))
+func (wsc *Connection) SetReadTimeout(d time.Duration) error {
+	var t time.Time
+	if d > 0 {
+		t = time.Now().Add(d)
+	}
+	return wsc.conn.SetReadDeadline(t)
 }
 
 func (wsc *Connection) SetWriteDeadline(t time.Time) error {
 	return wsc.conn.SetWriteDeadline(t)
 }
 
-func (wsc *Connection) SetWriteDeadlineD(d time.Duration) error {
-	return wsc.conn.SetWriteDeadline(time.Now().Add(d))
+func (wsc *Connection) SetWriteTimeout(d time.Duration) error {
+	var t time.Time
+	if d > 0 {
+		t = time.Now().Add(d)
+	}
+	return wsc.conn.SetWriteDeadline(t)
 }
 
 //////////////// Logging ////////////////////
@@ -418,39 +442,34 @@ const (
 	LOG_DEBUG = 3
 )
 
-var logNames map[int]string = map[int]string{
+var logNames map[uint8]string = map[uint8]string{
 	LOG_ERROR: "ERROR",
 	LOG_WARN:  "WARN",
 	LOG_INFO:  "INFO",
 	LOG_DEBUG: "DEBUG",
 }
 
-func (wsc *Connection) Log(level uint8, fmt string, args ...interface{}) {
+func (wsc *Connection) Log(level uint8, format string, args ...interface{}) {
 	if level > wsc.LogLevel {
 		return
 	}
 	addr := wsc.conn.RemoteAddr()
-	// facepalm
-	all := make([]interface{}, 2+len(args))
-	all[0] = addr
-	all[1] = level
-	copy(all[2:], args)
-	// facepalm is over
-	log.Printf("%s %s "+fmt+"\n", all...)
+	msg := fmt.Sprintf("%s %s: ", addr, logNames[level]) + fmt.Sprintf(format, args...)
+	log.Println(msg)
 }
 
 func (wsc *Connection) LogError(fmt string, args ...interface{}) {
-	wsc.Log(LOG_ERROR, fmt, args)
+	wsc.Log(LOG_ERROR, fmt, args...)
 }
 
 func (wsc *Connection) LogWarn(fmt string, args ...interface{}) {
-	wsc.Log(LOG_WARN, fmt, args)
+	wsc.Log(LOG_WARN, fmt, args...)
 }
 
 func (wsc *Connection) LogInfo(fmt string, args ...interface{}) {
-	wsc.Log(LOG_INFO, fmt, args)
+	wsc.Log(LOG_INFO, fmt, args...)
 }
 
 func (wsc *Connection) LogDebug(fmt string, args ...interface{}) {
-	wsc.Log(LOG_DEBUG, fmt, args)
+	wsc.Log(LOG_DEBUG, fmt, args...)
 }

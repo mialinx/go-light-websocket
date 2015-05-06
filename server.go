@@ -3,7 +3,6 @@ package websocket
 import (
 	"log"
 	"net"
-	"runtime/debug"
 	"time"
 )
 
@@ -15,10 +14,14 @@ type Server struct {
 }
 
 type Config struct {
-	MaxMsgLen       int
-	ReadBufferSize  int
-	WriteBufferSize int
-	IOStatistics    bool
+	MaxMsgLen             int
+	ReadBufferSize        int
+	WriteBufferSize       int
+	IOStatistics          bool
+	LogLevel              uint8
+	CloseTimeout          time.Duration
+	HandshakeReadTimeout  time.Duration
+	HandshakeWriteTimeout time.Duration
 }
 
 func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {
@@ -31,6 +34,15 @@ func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {
 	if config.MaxMsgLen == 0 {
 		config.MaxMsgLen = DefaultMaxMsgLen
 	}
+	if config.HandshakeReadTimeout == 0 {
+		config.HandshakeReadTimeout = DefaultHandshakeReadTimeout
+	}
+	if config.HandshakeWriteTimeout == 0 {
+		config.HandshakeWriteTimeout = DefaultHandshakeWriteTimeout
+	}
+	if config.CloseTimeout == 0 {
+		config.CloseTimeout = DefaultCloseTimeout
+	}
 	s := &Server{
 		Addr:      addr,
 		Handshake: handshake,
@@ -38,18 +50,6 @@ func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {
 		Stats:     newStats(),
 	}
 	return s
-}
-
-func (s *Server) serveConnection(conn net.Conn) {
-	defer func() {
-		s.Stats.add(eventClose{})
-		if err := recover(); err != nil {
-			log.Printf("ERROR: %s\n%s", err, debug.Stack())
-		}
-	}()
-	s.Stats.add(eventConnect{})
-	wsc := newConnection(s, conn)
-	wsc.serve()
 }
 
 func (s *Server) Serve() (err error) {
@@ -63,10 +63,13 @@ func (s *Server) Serve() (err error) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("Failed to accept connection %s", err)
+			log.Printf("ERROR: Failed to accept connection %s", err)
 			time.Sleep(AcceptErrorTimeout)
 			continue
 		}
-		go s.serveConnection(conn)
+		go func() {
+			wsc := newConnection(s, conn.(*net.TCPConn))
+			wsc.serve()
+		}()
 	}
 }

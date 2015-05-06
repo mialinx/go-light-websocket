@@ -5,13 +5,15 @@ import (
 )
 
 const (
-	KeyMagic               = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	DefaultMaxMsgLen       = 1024 * 1024
-	DefaultReadBufferSize  = 2 * 1024
-	DefaultWriteBufferSize = 2 * 1024
-	MaxControlFrameLength  = 125
-	AcceptErrorTimeout     = time.Second
-	CloseWaitTimeout       = 5 * time.Second
+	KeyMagic                     = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	DefaultMaxMsgLen             = 1024 * 1024
+	DefaultReadBufferSize        = 2 * 1024
+	DefaultWriteBufferSize       = 2 * 1024
+	MaxControlFrameLength        = 125
+	AcceptErrorTimeout           = time.Second
+	DefaultCloseTimeout          = 5 * time.Second
+	DefaultHandshakeReadTimeout  = 3 * time.Second
+	DefaultHandshakeWriteTimeout = 3 * time.Second
 )
 
 const (

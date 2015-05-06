@@ -175,7 +175,7 @@ func (st *Stats) handler() {
 			if st.Connections > 0 {
 				st.Connections--
 			} else {
-				log.Printf("stats: Connections below zero")
+				log.Printf("ERROR: stats: Connections below zero")
 			}
 		case eventHandshake:
 			st.Handshakes.inc()
@@ -187,7 +187,7 @@ func (st *Stats) handler() {
 			if st.ConnectionsReading > 0 {
 				st.ConnectionsReading--
 			} else {
-				log.Printf("stats: ConnectionsReading below zero")
+				log.Printf("ERROR: stats: ConnectionsReading below zero")
 			}
 		case eventWriteStart:
 			st.ConnectionsWriting++
@@ -195,19 +195,19 @@ func (st *Stats) handler() {
 			if st.ConnectionsWriting > 0 {
 				st.ConnectionsWriting--
 			} else {
-				log.Printf("stats: ConnectionsWriting below zero")
+				log.Printf("ERROR: stats: ConnectionsWriting below zero")
 			}
 		case eventInFrame:
 			if fs, ok := st.InFrames[ev.opcode]; ok {
 				fs.inc()
 			} else {
-				log.Printf("stats: unknown opcode %d", ev.opcode)
+				log.Printf("ERROR: stats: unknown opcode %d", ev.opcode)
 			}
 		case eventOutFrame:
 			if fs, ok := st.OutFrames[ev.opcode]; ok {
 				fs.inc()
 			} else {
-				log.Printf("stats: unknown opcode %d", ev.opcode)
+				log.Printf("ERROR: stats: unknown opcode %d", ev.opcode)
 			}
 		default:
 			panic(fmt.Sprintf("unknown stat event type %v", ev))

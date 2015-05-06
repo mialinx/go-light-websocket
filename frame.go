@@ -68,7 +68,7 @@ func (f *Frame) readHeader() error {
 			return err
 		}
 	}
-	f.stats.add(eventInFrame{})
+	f.stats.add(eventInFrame{opcode: f.Opcode})
 	return nil
 }
 
@@ -104,7 +104,7 @@ func (f *Frame) writeHeader() error {
 		}
 		b = b[n:]
 	}
-	f.stats.add(eventOutFrame{})
+	f.stats.add(eventOutFrame{opcode: f.Opcode})
 	return nil
 }
 
