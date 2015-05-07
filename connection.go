@@ -106,6 +106,8 @@ func (wsc *Connection) serve() {
 		rsp.WriteTo(wsc.w)
 	}
 	wsc.server.Stats.add(eventHandshake{})
+	wsc.SetReadTimeout(0)
+	wsc.SetWriteTimeout(0)
 	err = handler(wsc)
 	if err != nil && err != io.EOF {
 		wsc.LogError("err: %s", err)
