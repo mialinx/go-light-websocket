@@ -8,7 +8,7 @@ import (
 
 type Frame struct {
 	Fin    bool
-	Opcode byte
+	Opcode uint8
 	Mask   bool
 	Key    [4]byte
 	Len    int
@@ -60,13 +60,15 @@ func (f *Frame) readHeader() error {
 		f.Len += int(b[6]) << 8
 		f.Len += int(b[7])
 		if f.Len < 0 {
-			return ErrMsgTooLong
+			return ErrBadFrame
 		}
 	}
 	if f.Mask {
 		if _, err := io.ReadFull(f.r, f.Key[:]); err != nil {
 			return err
 		}
+	} else {
+		return ErrUnmaskedFrame
 	}
 	f.stats.add(eventInFrame{opcode: f.Opcode})
 	return nil
@@ -133,6 +135,9 @@ func (f *Frame) write(b []byte) (int, error) {
 }
 
 func (f *Frame) recv() ([]byte, error) {
+	if f.Len == 0 {
+		return []byte{}, nil
+	}
 	b := make([]byte, f.Len)
 	for f.done < f.Len {
 		_, err := f.read(b[f.done:])
@@ -146,6 +151,9 @@ func (f *Frame) recv() ([]byte, error) {
 func (f *Frame) send(b []byte) error {
 	if f.Len != len(b) {
 		panic("buffer len does not match fram len")
+	}
+	if f.Len == 0 {
+		return nil
 	}
 	_, err := f.write(b[f.done:])
 	return err

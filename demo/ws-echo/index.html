@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>WebSocket Echo Test</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+</head>
+<body>
+    <h2>WebSocket Echo Test</h2>
+    <textarea name="msg" id="input" cols="80" rows="5"></textarea>
+    <br>
+    <button id="cnt">Connect</button>
+    <input type="number" value="100" id="genlen"> <button id="gen">Generate fake</button>
+    <button id="snd">Send</button>
+    <button id="cls">Close</button>
+    <br>
+    <hr>
+    <div id="output"></div>
+
+    <script language="javascript" type="text/javascript">
+        var url = "ws://localhost:1234/";
+        var websocket = null;
+        var output = $('#output');
+        var $input = $('#input');
+        var $cntbtn = $('#cnt');
+        var $sndbtn = $('#snd');
+        var $clsbtn = $('#cls');
+        var $genbtn = $('#gen');
+        var $genlen = $('#genlen');
+
+        function cut(message) {
+            if (message.length > 100) {
+                return  message.substr(0,50) + '...' + message.substr(message.length - 50, 50) + ' (' + message.length + ')';
+            }
+            return message;
+        }
+
+        function fake(n) {
+            var abc = 'qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM0123456789'
+            var x = "";
+            for (var j = 0; j < n; j++) {
+                x += abc.substr(Math.floor(Math.random()*abc.length), 1)
+            }
+            return x
+        }
+
+        function connect() {
+            if (websocket != null) {
+                websocket.close();
+            }
+            websocket = new WebSocket(url);
+            websocket.onopen = function(evt) {
+                writeToScreen("CONNECTED");
+                sendMessage("WebSocket rocks");
+                console.log('onopen', evt);
+            };
+            websocket.onclose = function(evt) {
+                writeToScreen("DISCONNECTED");
+                console.log('onclose', evt);
+            };
+            websocket.onmessage = function(evt) {
+                writeToScreen('<span style="color: blue;">RESPONSE: ' + cut(evt.data) + '</span>');
+                console.log('onmessage', evt);
+            };
+            websocket.onerror = function(evt) {
+                writeToScreen('<span style="color: red;">ERROR:</span> ' + evt.data);
+                console.log('onerror', evt);
+            };
+        }
+
+        function sendMessage(message) {
+            if (websocket == null) {
+                writeToScreen("NOT CONNECTED!");
+            }
+            else {
+                writeToScreen("SENT: " + cut(message));
+                websocket.send(message);
+            }
+        }
+
+        function writeToScreen(message) {
+          var pre = $('<p></p>');
+          pre.html(message);
+          pre.css('word-wrap', 'break-word');
+          output.prepend(pre)
+        }
+
+        function disconnect() {
+            if (websocket != null) {
+                websocket.close();
+                websocket = null;
+            }
+        }
+
+        $cntbtn.on("click", function(ev) {
+            connect();
+        });
+
+        $sndbtn.on("click", function(ev) {
+            sendMessage($input.text());
+        });
+
+        $clsbtn.on("click", function() {
+            disconnect();
+        });
+
+        $genbtn.on("click", function() {
+            var n = parseInt($genlen.val());
+            $input.text(fake(n));
+        });
+
+        $(function(){
+            connect();
+        })
+    </script>
+</body>
+</html>

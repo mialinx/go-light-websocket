@@ -92,15 +92,6 @@ func (wws *WriterWithStats) Write(b []byte) (n int, err error) {
 
 //////////////////////////////////////////////////////////
 
-var knownOpcodes []uint8 = []uint8{
-	OPCODE_CONTINUATION,
-	OPCODE_TEXT,
-	OPCODE_BINARY,
-	OPCODE_CLOSE,
-	OPCODE_PING,
-	OPCODE_PONG,
-}
-
 type Stats struct {
 	Connections        uint64
 	ConnectionsReading uint64
@@ -120,11 +111,11 @@ func (st *Stats) String() string {
 	s += fmt.Sprintf("Handshakes: %s\n", st.Handshakes)
 	s += fmt.Sprintf("HandshakesFailed: %s\n", st.HandshakesFailed)
 	s += "InFrames\n"
-	for _, opcode := range knownOpcodes {
+	for _, opcode := range KnownOpcodes {
 		s += fmt.Sprintf("  %d: %s\n", opcode, st.InFrames[opcode])
 	}
 	s += "OutFrames\n"
-	for _, opcode := range knownOpcodes {
+	for _, opcode := range KnownOpcodes {
 		s += fmt.Sprintf("  %d: %s\n", opcode, st.OutFrames[opcode])
 	}
 	return s
@@ -136,7 +127,7 @@ func newStats() *Stats {
 	s.HandshakesFailed = newEvStat()
 	s.InFrames = make(map[uint8]*RpsCounter, 10)
 	s.OutFrames = make(map[uint8]*RpsCounter, 10)
-	for _, opcode := range knownOpcodes {
+	for _, opcode := range KnownOpcodes {
 		s.InFrames[opcode] = newEvStat()
 		s.OutFrames[opcode] = newEvStat()
 	}

@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"errors"
 	"time"
 )
 
@@ -25,6 +26,24 @@ const (
 	OPCODE_PONG         = 10
 )
 
+var KnownOpcodes []uint8 = []uint8{
+	OPCODE_CONTINUATION,
+	OPCODE_TEXT,
+	OPCODE_BINARY,
+	OPCODE_CLOSE,
+	OPCODE_PING,
+	OPCODE_PONG,
+}
+
+var OpcodeNames map[uint8]string = map[uint8]string{
+	OPCODE_CONTINUATION: "continuation",
+	OPCODE_TEXT:         "text",
+	OPCODE_BINARY:       "binary",
+	OPCODE_CLOSE:        "close",
+	OPCODE_PING:         "ping",
+	OPCODE_PONG:         "pong",
+}
+
 const (
 	STATUS_OK                = 1000
 	STATUS_GOAWAY            = 1001
@@ -35,7 +54,20 @@ const (
 	STATUS_BAD_CLOSED        = 1006
 	STATUS_BAD_DATA          = 1007
 	STATUS_POLICY            = 1008
-	STATUS_TOO_BIG           = 1009
+	STATUS_TOO_LARGE         = 1009
 	STATUS_NEED_EXTENSION    = 1010
 	STATUS_INTERNAL          = 1011
+)
+
+var (
+	EndOfFrame                = errors.New("end of frame")
+	EndOfMessage              = errors.New("end of message")
+	ErrBadFrame               = errors.New("bad frame")
+	ErrUnmaskedFrame          = errors.New("unmasked frame")
+	ErrUnexpectedFrame        = errors.New("unexpected text/binary frame in sequence")
+	ErrUnexpectedContinuation = errors.New("unexpected continuation frame")
+	ErrUnknownOpcode          = errors.New("frame with unknown opcode")
+	ErrMessageTooLarge        = errors.New("message too large")
+	ErrConnectionClosed       = errors.New("connection already closed")
+	ErrMessageClosed          = errors.New("message already closed")
 )

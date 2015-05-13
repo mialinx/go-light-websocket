@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,14 +26,10 @@ type Connection struct {
 	conn       *net.TCPConn
 	Extensions []string
 	LogLevel   uint8
-	rcvdClose  uint16
+	mm         *MultiframeMessage
+	RcvdClose  *Message
+	SentClose  *Message
 }
-
-var (
-	ErrMsgTooLong = errors.New("incoming frame is too long")
-	EndOfFrame    = errors.New("end of frame")
-	EndOfMessage  = errors.New("end of message")
-)
 
 func acceptKey(key string) string {
 	buf := make([]byte, len(key)+len(KeyMagic))
@@ -71,6 +66,7 @@ func (wsc *Connection) serve() {
 		if err := recover(); err != nil {
 			wsc.LogError("panic: %s\n%s", err, debug.Stack())
 		}
+		// TODO: is socket closed ?
 		wsc.LogInfo("connection closed")
 		wsc.server.Stats.add(eventClose{})
 	}()
@@ -87,7 +83,7 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Connection"] = "close"
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
-		wsc.conn.Close()
+		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	}
@@ -98,7 +94,7 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Connection"] = "close"
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
-		wsc.conn.Close()
+		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	} else {
@@ -110,7 +106,7 @@ func (wsc *Connection) serve() {
 	wsc.SetWriteTimeout(0)
 	err = handler(wsc)
 	if err != nil && err != io.EOF {
-		wsc.LogError("err: %s", err)
+		wsc.LogError("err: %T %s", err, err.Error())
 	}
 }
 
@@ -179,39 +175,67 @@ func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) Handle
 type MessageReader struct {
 	wsc    *Connection
 	frame  *Frame
-	useEom bool
-	closed bool
+	opened bool
+	err    error
 }
 
-func (wsc *Connection) NewReader(useEom bool) *MessageReader {
-	return &MessageReader{wsc: wsc, useEom: useEom}
+func (wsc *Connection) NewReader() *MessageReader {
+	return &MessageReader{wsc: wsc}
 }
 
 func (mr *MessageReader) Read(b []byte) (int, error) {
-	if mr.closed {
-		return 0, io.EOF
+	if mr.err != nil {
+		return 0, mr.err
 	}
-	if mr.frame == nil {
-		mr.frame = newFrame(mr.wsc)
-		// TODO: handle control frames
-		if err := mr.frame.readHeader(); err != nil {
-			mr.closed = true
-			return 0, err
+	f := mr.frame
+	if f == nil {
+		f = newFrame(mr.wsc)
+		if err := f.readHeader(); err != nil {
+			mr.err = err
+			return 0, mr.err
 		}
-		mr.wsc.LogDebug("frame header received: %s", mr.frame)
+		mr.wsc.LogDebug("frame header received: %s", f)
+		switch f.Opcode {
+		case OPCODE_PING, OPCODE_PONG, OPCODE_CLOSE:
+			b, err := f.recv()
+			if err != nil {
+				mr.err = err
+				return 0, mr.err
+			}
+			// control frame - return out of order as errors
+			m := &Message{f.Opcode, b}
+			if f.Opcode == OPCODE_CLOSE {
+				mr.wsc.RcvdClose = m
+				mr.err = io.EOF
+			}
+			return 0, m
+		case OPCODE_TEXT, OPCODE_BINARY:
+			if mr.opened {
+				mr.err = ErrUnexpectedFrame
+				return 0, mr.err
+			} else {
+				mr.opened = true
+			}
+		case OPCODE_CONTINUATION:
+			if !mr.opened {
+				mr.err = ErrUnexpectedContinuation
+				return 0, mr.err
+			}
+		default:
+			mr.err = ErrUnknownOpcode
+			return 0, mr.err
+		}
+		mr.frame = f
 	}
-	n, err := mr.frame.read(b)
+	n, err := f.read(b)
 	mr.wsc.LogDebug("frame body read: %d", n)
 	if err == EndOfFrame {
-		if mr.frame.Fin {
-			if mr.useEom {
-				err = EndOfMessage
-			} else {
-				err = io.EOF
-			}
-			mr.closed = true
+		if f.Fin {
+			err = io.EOF
+			mr.err = err
 		} else {
 			err = nil
+			mr.frame = nil
 		}
 	}
 	return n, err
@@ -235,7 +259,10 @@ func (wsc *Connection) NewWriter(binary bool) *MessageWriter {
 
 func (mw *MessageWriter) Write(b []byte) (int, error) {
 	if mw.closed {
-		return 0, io.EOF
+		return 0, ErrMessageClosed
+	}
+	if mw.wsc.SentClose != nil {
+		return 0, ErrConnectionClosed
 	}
 	f := newFrame(mw.wsc)
 	f.Len = len(b)
@@ -270,9 +297,10 @@ func (mw *MessageWriter) Close() error {
 
 //////////////// Recv - Send interface ////////////////////
 
-func (wsc *Connection) Recv() ([]byte, error) {
-	bbuf := make([][]byte, 0, 10)
-	total := 0
+func (wsc *Connection) Recv() (*Message, error) {
+	if wsc.RcvdClose != nil {
+		return nil, io.EOF
+	}
 	for {
 		f := newFrame(wsc)
 		err := f.readHeader()
@@ -280,54 +308,58 @@ func (wsc *Connection) Recv() ([]byte, error) {
 			return nil, err
 		}
 		wsc.LogDebug("frame header received: %s", f)
-		if f.Opcode == OPCODE_PING {
-			b, err := f.recv()
-			if err != nil {
-				return nil, err
-			}
-			wsc.SendPong(b)
-			continue
-		} else if f.Opcode == OPCODE_CLOSE {
-			b, err := f.recv()
-			if err == nil && len(b) >= 2 {
-				wsc.rcvdClose = uint16(b[0])<<8 + uint16(b[1])
-				wsc.CloseWithCode(wsc.rcvdClose, "")
-			} else {
-				wsc.CloseWithCode(STATUS_PROTOCOL_ERROR, "")
-			}
-			return nil, io.EOF
+
+		if (f.Len > wsc.server.Config.MaxMsgLen) ||
+			(f.Opcode == OPCODE_CONTINUATION && wsc.mm != nil && f.Len+wsc.mm.Len() > wsc.server.Config.MaxMsgLen) {
+			wsc.mm = nil
+			return nil, ErrMessageTooLarge
 		}
-		if err != nil {
-			return nil, err
-		}
-		if f.Len+total > wsc.server.Config.MaxMsgLen {
-			return nil, ErrMsgTooLong
-		}
+
 		b, err := f.recv()
 		if err != nil {
 			return nil, err
 		}
 		wsc.LogDebug("frame body received: %d", len(b))
-		bbuf = append(bbuf, b)
-		total += len(b)
-		if f.Fin {
-			break
+
+		switch f.Opcode {
+		case OPCODE_BINARY, OPCODE_TEXT:
+			if wsc.mm != nil {
+				return nil, ErrUnexpectedFrame
+			}
+			if f.Fin {
+				return &Message{f.Opcode, b}, nil
+			} else {
+				wsc.mm = &MultiframeMessage{f.Opcode, nil}
+				wsc.mm.Append(b)
+			}
+		case OPCODE_CONTINUATION:
+			if wsc.mm == nil {
+				return nil, ErrUnexpectedContinuation
+			}
+			wsc.mm.Append(b)
+			if f.Fin {
+				m := wsc.mm.AsMessage()
+				wsc.mm = nil
+				return m, nil
+			}
+		case OPCODE_CLOSE:
+			m := &Message{f.Opcode, b}
+			wsc.RcvdClose = m
+			return m, nil
+		default:
+			return &Message{f.Opcode, b}, nil
 		}
 	}
-	res := make([]byte, total)
-	total = 0
-	for _, b := range bbuf {
-		copy(res[total:], b)
-		total += len(b)
-	}
-	return res, nil
 }
 
-func (wsc *Connection) send(opcode uint8, b []byte) error {
+func (wsc *Connection) Send(msg *Message) error {
+	if wsc.SentClose != nil {
+		return ErrConnectionClosed
+	}
 	f := newFrame(wsc)
-	f.Len = len(b)
-	f.Opcode = opcode
-	if opcode == OPCODE_PING || opcode == OPCODE_PONG || opcode == OPCODE_CLOSE {
+	f.Len = len(msg.Body)
+	f.Opcode = msg.Opcode
+	if f.Opcode == OPCODE_PING || f.Opcode == OPCODE_PONG || f.Opcode == OPCODE_CLOSE {
 		if f.Len > MaxControlFrameLength {
 			panic(fmt.Sprintf("control frame %d exceeds data max data length %d", f.Opcode, f.Len))
 		}
@@ -338,75 +370,43 @@ func (wsc *Connection) send(opcode uint8, b []byte) error {
 		return err
 	}
 	wsc.LogDebug("frame header sent: %s", f)
-	_, err = f.write(b)
+	_, err = f.write(msg.Body)
 	if err != nil {
 		return err
 	}
-	wsc.LogDebug("frame body sent: %d", len(b))
+	wsc.LogDebug("frame body sent: %d", len(msg.Body))
+	if msg.Opcode == OPCODE_CLOSE {
+		wsc.SentClose = msg
+	}
 	return wsc.w.Flush()
 }
 
-func (wsc *Connection) Send(b []byte) error {
-	return wsc.send(OPCODE_BINARY, b)
-}
-
 func (wsc *Connection) SendText(b []byte) error {
-	return wsc.send(OPCODE_TEXT, b)
+	return wsc.Send(&Message{OPCODE_TEXT, b})
 }
 
-func (wsc *Connection) SendPong(b []byte) error {
-	return wsc.send(OPCODE_PONG, b)
+func (wsc *Connection) SendBinary(b []byte) error {
+	return wsc.Send(&Message{OPCODE_BINARY, b})
 }
 
 func (wsc *Connection) SendPing(b []byte) error {
-	return wsc.send(OPCODE_PING, b)
+	return wsc.Send(&Message{OPCODE_PING, b})
 }
 
-func (wsc *Connection) sendClose(code uint16, reason string) error {
-	b := make([]byte, 2+len(reason))
-	b[0] = byte((code >> 8) & 0xFF)
-	b[1] = byte(code & 0xFF)
-	copy(b[2:], reason)
-	return wsc.send(OPCODE_CLOSE, b)
+func (wsc *Connection) SendPong(b []byte) error {
+	return wsc.Send(&Message{OPCODE_PONG, b})
 }
 
-func (wsc *Connection) Close() error {
-	var st uint16 = STATUS_OK
-	if wsc.rcvdClose > 0 {
-		st = wsc.rcvdClose
-	}
-	return wsc.CloseWithCode(st, "")
+func (wsc *Connection) SendClose(code uint16, reason string) error {
+	return wsc.Send(&Message{OPCODE_CLOSE, BuildCloseBody(code, reason)})
 }
 
-func (wsc *Connection) CloseWithCode(code uint16, reason string) error {
-	err := wsc.sendClose(code, reason)
-	if err != nil {
-		wsc.conn.Close()
-		return err
-	}
-	if wsc.rcvdClose > 0 {
-		wsc.conn.Close()
-		return nil
-	}
-	// await for close from client
-	wsc.SetReadTimeout(wsc.server.Config.CloseTimeout)
-	for {
-		f := newFrame(wsc)
-		err := f.readHeader()
-		if err != nil {
-			wsc.conn.Close()
-			if err == io.EOF {
-				return nil
-			} else {
-				return err
-			}
-		}
-		if f.Opcode == OPCODE_CLOSE {
-			wsc.conn.Close()
-			return nil
-		}
-	}
-	return nil
+func (wsc *Connection) SendCloseError(err error) error {
+	return wsc.Send(&Message{OPCODE_CLOSE, Err2Close(err)})
+}
+
+func (wsc *Connection) Close() {
+	wsc.conn.Close()
 }
 
 //////////////// Options ////////////////////
