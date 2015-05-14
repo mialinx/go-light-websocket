@@ -29,6 +29,7 @@ type Connection struct {
 	mm         *MultiframeMessage
 	RcvdClose  *Message
 	SentClose  *Message
+	closed     bool
 }
 
 func acceptKey(key string) string {
@@ -66,7 +67,9 @@ func (wsc *Connection) serve() {
 		if err := recover(); err != nil {
 			wsc.LogError("panic: %s\n%s", err, debug.Stack())
 		}
-		// TODO: is socket closed ?
+		if !wsc.closed {
+			wsc.Close()
+		}
 		wsc.LogInfo("connection closed")
 		wsc.server.Stats.add(eventClose{})
 	}()
@@ -261,7 +264,7 @@ func (mw *MessageWriter) Write(b []byte) (int, error) {
 	if mw.closed {
 		return 0, ErrMessageClosed
 	}
-	if mw.wsc.SentClose != nil {
+	if mw.wsc.SentClose != nil || mw.wsc.closed {
 		return 0, ErrConnectionClosed
 	}
 	f := newFrame(mw.wsc)
@@ -298,7 +301,7 @@ func (mw *MessageWriter) Close() error {
 //////////////// Recv - Send interface ////////////////////
 
 func (wsc *Connection) Recv() (*Message, error) {
-	if wsc.RcvdClose != nil {
+	if wsc.RcvdClose != nil || wsc.closed {
 		return nil, io.EOF
 	}
 	for {
@@ -353,7 +356,7 @@ func (wsc *Connection) Recv() (*Message, error) {
 }
 
 func (wsc *Connection) Send(msg *Message) error {
-	if wsc.SentClose != nil {
+	if wsc.SentClose != nil || wsc.closed {
 		return ErrConnectionClosed
 	}
 	f := newFrame(wsc)
@@ -407,9 +410,10 @@ func (wsc *Connection) SendCloseError(err error) error {
 
 func (wsc *Connection) Close() {
 	wsc.conn.Close()
+	wsc.closed = true
 }
 
-func (wsc *Connection) CloseGracefull(err error) {
+func (wsc *Connection) CloseGraceful(err error) {
 	if wsc.SentClose == nil {
 		if wsc.RcvdClose == nil {
 			_ = wsc.SendCloseError(err)
