@@ -409,6 +409,26 @@ func (wsc *Connection) Close() {
 	wsc.conn.Close()
 }
 
+func (wsc *Connection) CloseGracefull(err error) {
+	if wsc.SentClose == nil {
+		if wsc.RcvdClose == nil {
+			_ = wsc.SendCloseError(err)
+		} else {
+			_ = wsc.Send(wsc.RcvdClose)
+		}
+	}
+	if wsc.RcvdClose == nil {
+		wsc.SetReadTimeout(wsc.server.Config.CloseTimeout)
+		for {
+			msg, err := wsc.Recv()
+			if err != nil || msg.Opcode == OPCODE_CLOSE {
+				break
+			}
+		}
+	}
+	wsc.Close()
+}
+
 //////////////// Options ////////////////////
 
 func (wsc *Connection) SetReadDeadline(t time.Time) error {
