@@ -70,10 +70,10 @@ func (wsc *Connection) serve() {
 		if !wsc.closed {
 			wsc.Close()
 		}
-		wsc.LogInfo("connection closed")
+		wsc.LogDebug("connection closed")
 		wsc.server.Stats.add(eventClose{})
 	}()
-	wsc.LogInfo("connection established")
+	wsc.LogDebug("connection established")
 	wsc.server.Stats.add(eventConnect{})
 	req := newHttpRequest()
 	rsp := newHttpResponse()
@@ -411,6 +411,7 @@ func (wsc *Connection) SendCloseError(err error) error {
 func (wsc *Connection) Close() {
 	wsc.conn.Close()
 	wsc.closed = true
+	wsc.LogDebug("socket closed")
 }
 
 func (wsc *Connection) CloseGraceful(err error) {
