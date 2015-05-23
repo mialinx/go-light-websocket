@@ -21,6 +21,7 @@ type HttpRequest struct {
 	Uri     string
 	Headers map[string]string
 	form    map[string]string
+	cookies map[string]string
 }
 
 type HttpResponse struct {
@@ -128,6 +129,9 @@ func (req *HttpRequest) FormValue(k string) string {
 			qs := req.Uri[li+1:]
 			for _, pair := range strings.Split(qs, "&") {
 				kv := strings.SplitN(pair, "=", 2)
+				if len(kv) < 2 || len(kv[0]) < 1 {
+					continue
+				}
 				k, _ := url.QueryUnescape(kv[0])
 				v, _ := url.QueryUnescape(kv[1])
 				req.form[k] = v
@@ -135,6 +139,22 @@ func (req *HttpRequest) FormValue(k string) string {
 		}
 	}
 	return req.form[k]
+}
+
+func (req *HttpRequest) CookieValue(k string) string {
+	if req.cookies == nil {
+		req.cookies = make(map[string]string, 5)
+		// parse cookies light
+		for _, pair := range strings.Split(req.Headers["Cookie"], ";") {
+			pair = strings.Trim(pair, "\t ")
+			kv := strings.SplitN(pair, "=", 2)
+			if len(kv) < 2 || len(kv[0]) < 1 {
+				continue
+			}
+			req.cookies[kv[0]] = kv[1]
+		}
+	}
+	return req.cookies[k]
 }
 
 func newHttpResponse() *HttpResponse {
