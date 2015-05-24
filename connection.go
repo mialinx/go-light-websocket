@@ -21,9 +21,9 @@ type HandshakeFunc func(*HttpRequest, *HttpResponse) HandlerFunc
 
 type Connection struct {
 	server     *Server
+	conn       *net.TCPConn
 	r          *bufio.Reader
 	w          *bufio.Writer
-	conn       *net.TCPConn
 	Extensions []string
 	LogLevel   uint8
 	mm         *MultiframeMessage
@@ -46,20 +46,24 @@ func newConnection(server *Server, conn *net.TCPConn) *Connection {
 		conn:     conn,
 		LogLevel: server.Config.LogLevel,
 	}
+	wsc.conn.SetReadBuffer(server.Config.SockReadBuffer)
+	wsc.conn.SetWriteBuffer(server.Config.SockWriteBuffer)
+	wsc.setupBuffio(server.Config.HttpReadBuffer, server.Config.HttpWriteBuffer)
+	return wsc
+}
+
+func (wsc *Connection) setupBuffio(rs, ws int) {
 	var r io.Reader
 	var w io.Writer
-	if server.Config.IOStatistics {
-		r = &ReaderWithStats{r: conn, stats: server.Stats}
-		w = &WriterWithStats{w: conn, stats: server.Stats}
+	if wsc.server.Config.IOStatistics {
+		r = &ReaderWithStats{r: wsc.conn, stats: wsc.server.Stats}
+		w = &WriterWithStats{w: wsc.conn, stats: wsc.server.Stats}
 	} else {
-		r = conn
-		w = conn
+		r = wsc.conn
+		w = wsc.conn
 	}
-	wsc.r = bufio.NewReaderSize(r, server.Config.ReadBufferSize)
-	wsc.conn.SetReadBuffer(server.Config.ReadBufferSize)
-	wsc.w = bufio.NewWriterSize(w, server.Config.WriteBufferSize)
-	wsc.conn.SetWriteBuffer(server.Config.WriteBufferSize)
-	return wsc
+	wsc.r = bufio.NewReaderSize(r, wsc.server.Config.WsReadBuffer)
+	wsc.w = bufio.NewWriterSize(w, wsc.server.Config.WsWriteBuffer)
 }
 
 func (wsc *Connection) serve() {
@@ -86,6 +90,7 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Connection"] = "close"
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
+		wsc.w.Flush()
 		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
@@ -97,16 +102,27 @@ func (wsc *Connection) serve() {
 		rsp.Headers["Connection"] = "close"
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
+		wsc.w.Flush()
 		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	} else {
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
 		rsp.WriteTo(wsc.w)
+		wsc.w.Flush()
 	}
 	wsc.server.Stats.add(eventHandshake{})
 	wsc.SetReadTimeout(0)
 	wsc.SetWriteTimeout(0)
+
+	// change bufferization
+	if wsc.r.Buffered() > 0 {
+		panic("unread data in buffer after http handshake")
+	}
+	wsc.w.Flush()
+	wsc.setupBuffio(wsc.server.Config.WsReadBuffer, wsc.server.Config.WsWriteBuffer)
+
+	// run ws
 	err = handler(wsc)
 	if err != nil && err != io.EOF {
 		wsc.LogError("err: %T %s", err, err.Error())

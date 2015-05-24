@@ -186,5 +186,4 @@ func (rsp *HttpResponse) WriteTo(w *bufio.Writer) {
 	}
 	w.WriteString("\r\n")
 	w.WriteString(rsp.Body)
-	w.Flush()
 }

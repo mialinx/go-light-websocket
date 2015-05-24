@@ -15,8 +15,12 @@ type Server struct {
 
 type Config struct {
 	MaxMsgLen             int
-	ReadBufferSize        int
-	WriteBufferSize       int
+	SockReadBuffer        int
+	SockWriteBuffer       int
+	HttpReadBuffer        int
+	HttpWriteBuffer       int
+	WsReadBuffer          int
+	WsWriteBuffer         int
 	IOStatistics          bool
 	LogLevel              uint8
 	CloseTimeout          time.Duration
@@ -25,11 +29,23 @@ type Config struct {
 }
 
 func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {
-	if config.ReadBufferSize == 0 {
-		config.ReadBufferSize = DefaultReadBufferSize
+	if config.SockReadBuffer == 0 {
+		config.SockReadBuffer = DefaultSockReadBuffer
 	}
-	if config.WriteBufferSize == 0 {
-		config.WriteBufferSize = DefaultReadBufferSize
+	if config.SockWriteBuffer == 0 {
+		config.SockWriteBuffer = DefaultSockReadBuffer
+	}
+	if config.HttpReadBuffer == 0 {
+		config.HttpReadBuffer = DefaultHttpReadBuffer
+	}
+	if config.HttpWriteBuffer == 0 {
+		config.HttpWriteBuffer = DefaultHttpReadBuffer
+	}
+	if config.WsReadBuffer == 0 {
+		config.WsReadBuffer = DefaultWsReadBuffer
+	}
+	if config.WsWriteBuffer == 0 {
+		config.WsWriteBuffer = DefaultWsReadBuffer
 	}
 	if config.MaxMsgLen == 0 {
 		config.MaxMsgLen = DefaultMaxMsgLen
