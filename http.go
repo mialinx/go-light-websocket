@@ -1,189 +1,46 @@
 package websocket
 
 import (
-	"bufio"
-	"errors"
+	"bytes"
+	"io"
 	"net/http"
-	"net/url"
-	"strconv"
-	"strings"
 )
 
-var (
-	ErrRequestLineTooLong = errors.New("Request line is out of buffer")
-	ErrHeaderLineTooLong  = errors.New("Header line is out of buffer")
-	ErrInvalidSyntax      = errors.New("Invalid request syntax")
-)
-
-type HttpRequest struct {
-	Method  string
-	Version string
-	Uri     string
-	Headers map[string]string
-	form    map[string]string
-	cookies map[string]string
+type httpBodyBuffer struct {
+	bytes.Buffer
 }
 
-type HttpResponse struct {
-	Status     int
-	StatusText string
-	Headers    map[string]string
-	Body       string
-}
-
-func newHttpRequest() *HttpRequest {
-	req := &HttpRequest{}
-	req.Headers = make(map[string]string, 8)
-	return req
-}
-
-func readLine(r *bufio.Reader) (string, error) {
-	var bbuf []string
-	for {
-		buf, isPrefix, err := r.ReadLine()
-		if err != nil {
-			return "", err
-		}
-		bbuf = append(bbuf, string(buf))
-		if !isPrefix {
-			break
-		}
-	}
-	return strings.Join(bbuf, ""), nil
-}
-
-func normalizeHeader(h string) string {
-	n := []byte(h)
-	shift := byte('a') - byte('A')
-	first := true
-	for i := 0; i < len(n); i++ {
-		if first {
-			if n[i] >= 'a' && n[i] <= 'z' {
-				n[i] -= shift
-			}
-		} else {
-			if n[i] >= 'A' && n[i] <= 'Z' {
-				n[i] += shift
-			}
-		}
-		if n[i] == '-' {
-			first = true
-		} else {
-			first = false
-		}
-	}
-	return string(n)
-}
-
-func (req *HttpRequest) ReadFrom(r *bufio.Reader) error {
-	line, err := readLine(r)
-	if err == bufio.ErrBufferFull {
-		return ErrRequestLineTooLong
-	} else if err != nil {
-		return err
-	}
-	parts := strings.Split(line, " ")
-	if len(parts) != 3 {
-		return ErrInvalidSyntax
-	}
-	req.Method = strings.ToUpper(parts[0])
-	req.Uri = parts[1]
-	req.Version = strings.ToUpper(parts[2])
-	var hn string
-	const lws = "\t "
-	for {
-		line, err := readLine(r)
-		if err == bufio.ErrBufferFull {
-			return ErrHeaderLineTooLong
-		} else if err != nil {
-			return err
-		}
-		if line == "" {
-			break
-		}
-		// multiline header
-		if (line[0] == ' ' || line[0] == '\t') && hn != "" {
-			req.Headers[hn] += " " + strings.Trim(line, lws)
-			continue
-		}
-		if i := strings.IndexByte(line, ':'); i > 0 {
-			hn = normalizeHeader(line[0:i])
-			if _, ok := req.Headers[hn]; ok {
-				// multiple Headers with same name
-				req.Headers[hn] += ", " + strings.Trim(line[i+1:], lws)
-			} else {
-				req.Headers[hn] = strings.Trim(line[i+1:], lws)
-			}
-			continue
-		}
-		return ErrInvalidSyntax
-	}
+func (hbb *httpBodyBuffer) Close() error {
 	return nil
 }
 
-func (req *HttpRequest) FormValue(k string) string {
-	if req.form == nil {
-		req.form = make(map[string]string, 5)
-		// parse form light
-		if li := strings.LastIndex(req.Uri, "?"); li > -1 {
-			qs := req.Uri[li+1:]
-			for _, pair := range strings.Split(qs, "&") {
-				kv := strings.SplitN(pair, "=", 2)
-				if len(kv) < 2 || len(kv[0]) < 1 {
-					continue
-				}
-				k, _ := url.QueryUnescape(kv[0])
-				v, _ := url.QueryUnescape(kv[1])
-				req.form[k] = v
-			}
-		}
-	}
-	return req.form[k]
+type httpResponseWriter struct {
+	rsp  http.Response
+	body httpBodyBuffer
 }
 
-func (req *HttpRequest) CookieValue(k string) string {
-	if req.cookies == nil {
-		req.cookies = make(map[string]string, 5)
-		// parse cookies light
-		for _, pair := range strings.Split(req.Headers["Cookie"], ";") {
-			pair = strings.Trim(pair, "\t ")
-			kv := strings.SplitN(pair, "=", 2)
-			if len(kv) < 2 || len(kv[0]) < 1 {
-				continue
-			}
-			req.cookies[kv[0]] = kv[1]
-		}
-	}
-	return req.cookies[k]
+func newHtttpResponseWriter() *httpResponseWriter {
+	hrw := new(httpResponseWriter)
+	hrw.rsp.ProtoMajor = 1
+	hrw.rsp.ProtoMinor = 1
+	hrw.rsp.Header = make(http.Header)
+	hrw.rsp.Body = &hrw.body
+	return hrw
 }
 
-func newHttpResponse() *HttpResponse {
-	rsp := &HttpResponse{}
-	rsp.Headers = make(map[string]string)
-	return rsp
+func (hrw *httpResponseWriter) Header() http.Header {
+	return hrw.rsp.Header
 }
 
-func (rsp *HttpResponse) WriteTo(w *bufio.Writer) {
-	var status_text string
-	if rsp.StatusText != "" {
-		status_text = rsp.StatusText
-	} else {
-		status_text = http.StatusText(rsp.Status)
-	}
-	w.WriteString("HTTP/1.1 ")
-	w.WriteString(strconv.Itoa(rsp.Status))
-	w.WriteString(" ")
-	w.WriteString(status_text)
-	w.WriteString("\r\n")
-	if rsp.Body != "" {
-		rsp.Headers["Content-Length"] = strconv.Itoa(len(rsp.Body))
-	}
-	for h, v := range rsp.Headers {
-		w.WriteString(h)
-		w.WriteString(": ")
-		w.WriteString(v)
-		w.WriteString("\r\n")
-	}
-	w.WriteString("\r\n")
-	w.WriteString(rsp.Body)
+func (hrw *httpResponseWriter) WriteHeader(status int) {
+	hrw.rsp.StatusCode = status
+}
+
+func (hrw *httpResponseWriter) Write(b []byte) (int, error) {
+	return hrw.body.Write(b)
+}
+
+func (hrw *httpResponseWriter) WriteTo(w io.Writer) error {
+	hrw.rsp.ContentLength = int64(hrw.body.Len())
+	return hrw.rsp.Write(w)
 }

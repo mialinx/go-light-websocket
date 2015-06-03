@@ -3,9 +3,10 @@ package main
 import (
 	"github.com/mialinx/go-light-websocket"
 	"log"
+	"net/http"
 )
 
-func handshake(req *websocket.HttpRequest, rsp *websocket.HttpResponse) websocket.HandlerFunc {
+func handshake(req *http.Request, rspw http.ResponseWriter) websocket.HandlerFunc {
 	return websocket.WrapChannelHandler(handler, 1)
 }
 

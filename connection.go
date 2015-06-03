@@ -17,7 +17,7 @@ import (
 
 type HandlerFunc func(*Connection) error
 
-type HandshakeFunc func(*HttpRequest, *HttpResponse) HandlerFunc
+type HandshakeFunc func(*http.Request, http.ResponseWriter) HandlerFunc
 
 type Connection struct {
 	server     *Server
@@ -79,41 +79,45 @@ func (wsc *Connection) serve() {
 	}()
 	wsc.LogDebug("connection established")
 	wsc.server.Stats.add(eventConnect{})
-	req := newHttpRequest()
-	rsp := newHttpResponse()
 	wsc.SetReadTimeout(wsc.server.Config.HandshakeReadTimeout)
-	err := req.ReadFrom(wsc.r)
+
+	req, err := http.ReadRequest(wsc.r)
+	rspw := newHtttpResponseWriter()
+
 	if err != nil {
 		wsc.LogError("http parse %s", err)
-		rsp.Status = http.StatusBadRequest
-		rsp.Headers["Content-Type"] = "text/plain"
-		rsp.Headers["Connection"] = "close"
+		rspw.Header().Set("Content-Type", "text/plain")
+		rspw.Header().Set("Connection", "close")
+		rspw.WriteHeader(http.StatusBadRequest)
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
-		rsp.WriteTo(wsc.w)
+		rspw.WriteTo(wsc.w)
 		wsc.w.Flush()
 		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	}
-	handler := wsc.httpHandshake(req, rsp)
+	handler := wsc.httpHandshake(req, rspw)
 	if handler == nil {
-		wsc.LogError("handshake failed %d: %s", rsp.Status, rsp.Body)
-		rsp.Headers["Content-Type"] = "text/plain"
-		rsp.Headers["Connection"] = "close"
+		wsc.LogError("handshake failed %d: %s", rspw.rsp.StatusCode, rspw.body.String())
+		rspw.Header().Set("Content-Type", "text/plain")
+		rspw.Header().Set("Connection", "close")
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
-		rsp.WriteTo(wsc.w)
+		rspw.WriteTo(wsc.w)
 		wsc.w.Flush()
 		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	} else {
 		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
-		rsp.WriteTo(wsc.w)
+		rspw.WriteTo(wsc.w)
 		wsc.w.Flush()
 	}
 	wsc.server.Stats.add(eventHandshake{})
 	wsc.SetReadTimeout(0)
 	wsc.SetWriteTimeout(0)
+	// let gc rip them
+	req = nil
+	rspw = nil
 
 	// change bufferization
 	if wsc.r.Buffered() > 0 {
@@ -129,45 +133,45 @@ func (wsc *Connection) serve() {
 	}
 }
 
-func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) HandlerFunc {
+func (wsc *Connection) httpHandshake(req *http.Request, rspw http.ResponseWriter) HandlerFunc {
 	if req.Method != "GET" {
-		rsp.Status = http.StatusMethodNotAllowed
+		rspw.WriteHeader(http.StatusMethodNotAllowed)
 		return nil
 	}
 	upgrade := false
-	for _, val := range strings.Split(req.Headers["Connection"], ",") {
+	for _, val := range strings.Split(req.Header.Get("Connection"), ", ") {
 		if strings.ToLower(strings.TrimSpace(val)) == "upgrade" {
 			upgrade = true
 		}
 	}
 	if !upgrade {
-		rsp.Status = http.StatusBadRequest
-		rsp.Body = "'Connection: Upgrade' header missed"
+		rspw.WriteHeader(http.StatusBadRequest)
+		rspw.Write([]byte("'Connection: Upgrade' header missed"))
 		return nil
 	}
-	if strings.ToLower(req.Headers["Upgrade"]) != "websocket" {
-		rsp.Status = http.StatusBadRequest
-		rsp.Body = "'Upgrade: websocket' header missed"
+	if strings.ToLower(req.Header.Get("Upgrade")) != "websocket" {
+		rspw.WriteHeader(http.StatusBadRequest)
+		rspw.Write([]byte("'Upgrade: websocket' header missed"))
 		return nil
 	}
-	if req.Headers["Sec-Websocket-Key"] == "" {
-		rsp.Status = http.StatusBadRequest
-		rsp.Body = "'Sec-Websocket-Key' header missed"
+	if req.Header.Get("Sec-Websocket-Key") == "" {
+		rspw.WriteHeader(http.StatusBadRequest)
+		rspw.Write([]byte("'Sec-Websocket-Key' header missed"))
 		return nil
 	}
-	if val := req.Headers["Sec-Websocket-Version"]; val != "" {
+	if val := req.Header.Get("Sec-Websocket-Version"); val != "" {
 		version, err := strconv.Atoi(val)
 		if err != nil || version != 13 {
-			rsp.Status = http.StatusBadRequest
-			rsp.Body = "Invalid 'Sec-WebSocket-Version' header value (13 expected)"
+			rspw.WriteHeader(http.StatusBadRequest)
+			rspw.Write([]byte("Invalid 'Sec-WebSocket-Version' header value (13 expected)"))
 			return nil
 		}
 	} else {
-		rsp.Status = http.StatusBadRequest
-		rsp.Body = "'Sec-WebSocket-Version' header missed"
+		rspw.WriteHeader(http.StatusBadRequest)
+		rspw.Write([]byte("'Sec-WebSocket-Version' header missed"))
 		return nil
 	}
-	if val := req.Headers["Sec-Websocket-Extensions"]; val != "" {
+	if val := req.Header.Get("Sec-Websocket-Extensions"); val != "" {
 		for _, val := range strings.Split(val, ",") {
 			for _, ext := range strings.Split(val, ";") {
 				if ext := strings.TrimSpace(ext); ext != "" {
@@ -179,12 +183,12 @@ func (wsc *Connection) httpHandshake(req *HttpRequest, rsp *HttpResponse) Handle
 			// TODO: запилить экстеншенов что ли
 		}
 	}
-	handler := wsc.server.Handshake(req, rsp)
+	handler := wsc.server.Handshake(req, rspw)
 	if handler != nil {
-		rsp.Status = http.StatusSwitchingProtocols
-		rsp.Headers["Upgrade"] = "websocket"
-		rsp.Headers["Connection"] = "Upgrade"
-		rsp.Headers["Sec-WebSocket-Accept"] = acceptKey(req.Headers["Sec-Websocket-Key"])
+		rspw.Header().Set("Upgrade", "websocket")
+		rspw.Header().Set("Connection", "Upgrade")
+		rspw.Header().Set("Sec-WebSocket-Accept", acceptKey(req.Header.Get("Sec-Websocket-Key")))
+		rspw.WriteHeader(http.StatusSwitchingProtocols)
 	}
 	return handler
 }
