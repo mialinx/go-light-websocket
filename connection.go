@@ -17,7 +17,7 @@ import (
 
 type HandlerFunc func(*Connection) error
 
-type HandshakeFunc func(*http.Request, http.ResponseWriter) HandlerFunc
+type HandshakeFunc func(*Connection, *http.Request, http.ResponseWriter) HandlerFunc
 
 type Connection struct {
 	server     *Server
@@ -82,6 +82,9 @@ func (wsc *Connection) serve() {
 	wsc.SetReadTimeout(wsc.server.Config.HandshakeReadTimeout)
 
 	req, err := http.ReadRequest(wsc.r)
+	if req != nil {
+		req.RemoteAddr = wsc.conn.RemoteAddr().String()
+	}
 	rspw := newHtttpResponseWriter()
 
 	if err != nil {
@@ -183,7 +186,7 @@ func (wsc *Connection) httpHandshake(req *http.Request, rspw http.ResponseWriter
 			// TODO: запилить экстеншенов что ли
 		}
 	}
-	handler := wsc.server.Handshake(req, rspw)
+	handler := wsc.server.Handshake(wsc, req, rspw)
 	if handler != nil {
 		rspw.Header().Set("Upgrade", "websocket")
 		rspw.Header().Set("Connection", "Upgrade")
@@ -500,7 +503,7 @@ func (wsc *Connection) Log(level uint8, format string, args ...interface{}) {
 	if level > wsc.LogLevel {
 		return
 	}
-	addr := wsc.conn.RemoteAddr()
+	addr := wsc.conn.RemoteAddr().String()
 	msg := fmt.Sprintf("%s %s: ", addr, logNames[level]) + fmt.Sprintf(format, args...)
 	log.Println(msg)
 }

@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-func handshake(req *http.Request, rspw http.ResponseWriter) websocket.HandlerFunc {
+func handshake(wsc *websocket.Connection, req *http.Request, rspw http.ResponseWriter) websocket.HandlerFunc {
 	return websocket.WrapChannelHandler(handler, 1)
 }
 
