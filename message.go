@@ -1,10 +1,33 @@
 package websocket
 
+import (
+	"fmt"
+)
+
 // simple message
 
 type Message struct {
 	Opcode uint8
 	Body   []byte
+}
+
+func (m Message) String() string {
+	name := OpcodeNames[m.Opcode]
+	if name == "" {
+		name = fmt.Sprintf("opcode_%d", m.Opcode)
+	}
+	format := "%x"
+	if m.Opcode == OPCODE_TEXT {
+		format = "%s"
+	}
+	const maxlen = 30
+	body := m.Body
+	cont := ""
+	if len(body) > maxlen {
+		body = body[0:maxlen]
+		cont = "..."
+	}
+	return fmt.Sprintf(name+":"+format+cont, body)
 }
 
 func (m Message) Error() string {
