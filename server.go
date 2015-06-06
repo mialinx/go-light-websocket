@@ -26,6 +26,7 @@ type Config struct {
 	CloseTimeout          time.Duration
 	HandshakeReadTimeout  time.Duration
 	HandshakeWriteTimeout time.Duration
+	TCPKeepAlive          time.Duration
 }
 
 func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {

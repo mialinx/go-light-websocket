@@ -48,6 +48,10 @@ func newConnection(server *Server, conn *net.TCPConn) *Connection {
 	}
 	wsc.conn.SetReadBuffer(server.Config.SockReadBuffer)
 	wsc.conn.SetWriteBuffer(server.Config.SockWriteBuffer)
+	if server.Config.TCPKeepAlive > 0 {
+		wsc.conn.SetKeepAlive(true)
+		wsc.conn.SetKeepAlivePeriod(server.Config.TCPKeepAlive)
+	}
 	wsc.setupBuffio(server.Config.HttpReadBuffer, server.Config.HttpWriteBuffer)
 	return wsc
 }
