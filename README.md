@@ -72,44 +72,44 @@ func main() {
 
 # options
 
-## MaxMsgLen             int
+#### MaxMsgLen             int
 Maximal length of message, that can be buffered into memory
 
-## SockReadBuffer        int
-## SockWriteBuffer       int
+#### SockReadBuffer        int
+#### SockWriteBuffer       int
 TCP read/write buffer sizes (in kernel)
 In case you don't read much data from socket - you may set minimal size
 
-## HttpReadBuffer        int
-## HttpWriteBuffer       int
+#### HttpReadBuffer        int
+#### HttpWriteBuffer       int
 Userspace buffer for parsing http request and sending http response.
 Http requests may containg long headers, you may need large enough buffers for handshake.
 
-## WsReadBuffer          int
-## WsWriteBuffer         int
+#### WsReadBuffer          int
+#### WsWriteBuffer         int
 Userspace buffer for websocket framing protocol.
 Websocket is simple protocol, you may set the minimal value - 16 byte to avoid 
 userspace buffering. It will increase number of syscalls, but saves some memory.
 
-## IOStatistics          bool
+#### IOStatistics          bool
 Enables IO statistics - number of currently reading and writing connections.
 
-## LogLevel              uint8
+#### LogLevel              uint8
 Server log level. With DEBUG will print all sent and received frames.
 
-## HandshakeReadTimeout  time.Duration
-## HandshakeWriteTimeout time.Duration
+#### HandshakeReadTimeout  time.Duration
+#### HandshakeWriteTimeout time.Duration
 Timeouts to read http request and send http response (handshake).
 
-## CloseTimeout          time.Duration
+#### CloseTimeout          time.Duration
 Timeout to wait for websocket Close (ack) frame.
 
-## TCPKeepAlive          time.Duration
+#### TCPKeepAlive          time.Duration
 Enables TCP KeepAlive if not zero.
 
 
 # faq 
 
-## why not use standard http server ?
+#### why not use standard http server ?
 Standard http server but doesn't allow fine-tuning of connections and buffers.
 So it's consumes more memory and decrease maximal number of connections per server.
