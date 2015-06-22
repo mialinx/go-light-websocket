@@ -435,16 +435,17 @@ func (wsc *Connection) SendCloseError(err error) error {
 	return wsc.Send(&Message{OPCODE_CLOSE, Err2Close(err)})
 }
 
-func (wsc *Connection) Close() {
-	wsc.conn.Close()
+func (wsc *Connection) Close() error {
+	err := wsc.conn.Close()
 	wsc.closed = true
 	wsc.LogDebug("socket closed")
+	return err
 }
 
-func (wsc *Connection) CloseGraceful(err error) {
+func (wsc *Connection) CloseGraceful(code uint16, reason string) error {
 	if wsc.SentClose == nil {
 		if wsc.RcvdClose == nil {
-			_ = wsc.SendCloseError(err)
+			_ = wsc.SendClose(code, reason)
 		} else {
 			_ = wsc.Send(wsc.RcvdClose)
 		}
@@ -458,7 +459,7 @@ func (wsc *Connection) CloseGraceful(err error) {
 			}
 		}
 	}
-	wsc.Close()
+	return wsc.Close()
 }
 
 //////////////// Options ////////////////////
