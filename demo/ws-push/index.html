@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>WebSocket Push Server Test</title>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+</head>
+<body>
+    <h2>WebSocket Push Server Test</h2>
+    <br>
+    <input type="number" value="10" id="id"> <button id="connect">Connect</button>
+    <button id="close">Close</button>
+    <br>
+    <hr>
+    <div id="output"></div>
+
+    <script language="javascript" type="text/javascript">
+        var url = "ws://localhost:1234/";
+        var websocket = null;
+        var $output = $('#output');
+        var $connect = $('#connect');
+        var $close = $('#close');
+        var $id = $('#id');
+
+        function connect() {
+            if (websocket != null) {
+                websocket.close();
+            }
+            var id = encodeURIComponent($id.val());
+            websocket = new WebSocket(url + '?id=' + id);
+            websocket.onopen = function(evt) {
+                writeToScreen("CONNECTED");
+                writeToScreen("Type curl -v 'http://127.0.0.1:8080/put/?id=" + id + "&msg=message_text' in console to send push");
+                console.log('onopen', evt);
+            };
+            websocket.onclose = function(evt) {
+                writeToScreen("DISCONNECTED");
+                console.log('onclose', evt);
+            };
+            websocket.onmessage = function(evt) {
+                writeToScreen('<span style="color: blue;">MESSAGE: ' + evt.data + '</span>');
+                console.log('onmessage', evt);
+            };
+            websocket.onerror = function(evt) {
+                writeToScreen('<span style="color: red;">ERROR:</span> ' + evt.data);
+                console.log('onerror', evt);
+            };
+        }
+
+        function writeToScreen(message) {
+            var pre = $('<p></p>');
+            pre.html(message);
+            pre.css('word-wrap', 'break-word');
+            $output.prepend(pre)
+        }
+
+        function disconnect() {
+            if (websocket != null) {
+                websocket.close();
+                websocket = null;
+            }
+        }
+
+        $connect.on("click", function(ev) {
+            connect();
+        });
+
+        $close.on("click", function() {
+            disconnect();
+        });
+
+    </script>
+</body>
+</html>
