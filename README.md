@@ -40,7 +40,7 @@ func handler(wsc *websocket.Connection, reverse bool) error {
             // okay, pong
         case websocket.OPCODE_TEXT, websocket.OPCODE_BINARY:
             if string(msg.Body) == "exit" {
-                wsc.CloseGraceful(nil)
+                wsc.CloseGracefulError(nil)
                 break
             }
             if reverse {

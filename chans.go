@@ -14,7 +14,7 @@ func reader(wsc *Connection, rc chan *Message, wc chan *Message) {
 			wsc.LogError("1) %T %v %s", err, err, err.Error())
 			wsc.LogInfo("closing rc")
 			close(rc)
-			wc <- &Message{OPCODE_CLOSE, Err2Close(err)}
+			wc <- &Message{OPCODE_CLOSE, BuildCloseBodyError(err)}
 			return
 		}
 		switch msg.Opcode {
@@ -83,7 +83,7 @@ func WrapChannelHandler(handler ChannelHandler, l int) HandlerFunc {
 		go reader(wsc, rc, wc)
 		go writer(wsc, rc, wc)
 		err := handler(rc, wc)
-		wc <- &Message{OPCODE_CLOSE, Err2Close(err)}
+		wc <- &Message{OPCODE_CLOSE, BuildCloseBodyError(err)}
 		return err
 	}
 }

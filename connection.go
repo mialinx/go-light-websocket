@@ -432,7 +432,7 @@ func (wsc *Connection) SendClose(code uint16, reason string) error {
 }
 
 func (wsc *Connection) SendCloseError(err error) error {
-	return wsc.Send(&Message{OPCODE_CLOSE, Err2Close(err)})
+	return wsc.Send(&Message{OPCODE_CLOSE, BuildCloseBodyError(err)})
 }
 
 func (wsc *Connection) Close() error {
@@ -460,6 +460,10 @@ func (wsc *Connection) CloseGraceful(code uint16, reason string) error {
 		}
 	}
 	return wsc.Close()
+}
+
+func (wsc *Connection) CloseGracefulError(err error) error {
+	return wsc.CloseGraceful(Err2CodeReason(err))
 }
 
 //////////////// Options ////////////////////
