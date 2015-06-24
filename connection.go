@@ -66,8 +66,8 @@ func (wsc *Connection) setupBuffio(rs, ws int) {
 		r = wsc.conn
 		w = wsc.conn
 	}
-	wsc.r = bufio.NewReaderSize(r, wsc.server.Config.WsReadBuffer)
-	wsc.w = bufio.NewWriterSize(w, wsc.server.Config.WsWriteBuffer)
+	wsc.r = bufio.NewReaderSize(r, rs)
+	wsc.w = bufio.NewWriterSize(w, ws)
 }
 
 func (wsc *Connection) serve() {
