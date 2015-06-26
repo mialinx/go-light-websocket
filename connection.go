@@ -3,16 +3,19 @@ package websocket
 import (
 	"bufio"
 	"crypto/sha1"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"reflect"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 type HandlerFunc func(*Connection) error
@@ -21,7 +24,7 @@ type HandshakeFunc func(*Connection, *http.Request, http.ResponseWriter) Handler
 
 type Connection struct {
 	server     *Server
-	conn       *net.TCPConn
+	conn       net.Conn
 	r          *bufio.Reader
 	w          *bufio.Writer
 	Extensions []string
@@ -40,17 +43,27 @@ func acceptKey(key string) string {
 	return base64.StdEncoding.EncodeToString(buf2[:])
 }
 
-func newConnection(server *Server, conn *net.TCPConn) *Connection {
+func newConnection(server *Server, conn net.Conn) *Connection {
 	wsc := &Connection{
 		server:   server,
 		conn:     conn,
 		LogLevel: server.Config.LogLevel,
 	}
-	wsc.conn.SetReadBuffer(server.Config.SockReadBuffer)
-	wsc.conn.SetWriteBuffer(server.Config.SockWriteBuffer)
+	var tconn *net.TCPConn
+	switch conn := conn.(type) {
+	case *net.TCPConn:
+		tconn = conn
+	case *tls.Conn:
+		v := reflect.ValueOf(conn).Elem().FieldByName("conn")
+		tconn = (*net.TCPConn)(unsafe.Pointer(v.Elem().Pointer()))
+	default:
+		panic("unexpected type of connection: neither TCP nor TLS")
+	}
+	tconn.SetReadBuffer(server.Config.SockReadBuffer)
+	tconn.SetWriteBuffer(server.Config.SockWriteBuffer)
 	if server.Config.TCPKeepAlive > 0 {
-		wsc.conn.SetKeepAlive(true)
-		wsc.conn.SetKeepAlivePeriod(server.Config.TCPKeepAlive)
+		tconn.SetKeepAlive(true)
+		tconn.SetKeepAlivePeriod(server.Config.TCPKeepAlive)
 	}
 	wsc.setupBuffio(server.Config.HttpReadBuffer, server.Config.HttpWriteBuffer)
 	return wsc
@@ -190,7 +203,7 @@ func (wsc *Connection) httpHandshake(req *http.Request, rspw http.ResponseWriter
 			// TODO: запилить экстеншенов что ли
 		}
 	}
-	handler := wsc.server.Handshake(wsc, req, rspw)
+	handler := wsc.server.Config.Handshake(wsc, req, rspw)
 	if handler != nil {
 		rspw.Header().Set("Upgrade", "websocket")
 		rspw.Header().Set("Connection", "Upgrade")

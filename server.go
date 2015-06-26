@@ -1,19 +1,19 @@
 package websocket
 
 import (
+	"crypto/tls"
 	"log"
 	"net"
 	"time"
 )
 
 type Server struct {
-	Addr      string
-	Handshake HandshakeFunc
-	Config    *Config
-	Stats     *Stats
+	Config *Config
+	Stats  *Stats
 }
 
 type Config struct {
+	Handshake             HandshakeFunc
 	MaxMsgLen             int
 	SockReadBuffer        int
 	SockWriteBuffer       int
@@ -29,7 +29,10 @@ type Config struct {
 	TCPKeepAlive          time.Duration
 }
 
-func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {
+func NewServer(config Config) *Server {
+	if config.Handshake == nil {
+		panic("config.Handshake is not set")
+	}
 	if config.SockReadBuffer == 0 {
 		config.SockReadBuffer = DefaultSockReadBuffer
 	}
@@ -61,22 +64,13 @@ func NewServer(addr string, handshake HandshakeFunc, config Config) *Server {
 		config.CloseTimeout = DefaultCloseTimeout
 	}
 	s := &Server{
-		Addr:      addr,
-		Handshake: handshake,
-		Config:    &config,
-		Stats:     newStats(),
+		Config: &config,
+		Stats:  newStats(),
 	}
 	return s
 }
 
-func (s *Server) Serve() (err error) {
-	if s.Handshake == nil {
-		panic("Hanshake is nil")
-	}
-	ln, err := net.Listen("tcp", s.Addr)
-	if err != nil {
-		return err
-	}
+func (s *Server) serve(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -85,8 +79,34 @@ func (s *Server) Serve() (err error) {
 			continue
 		}
 		go func() {
-			wsc := newConnection(s, conn.(*net.TCPConn))
+			wsc := newConnection(s, conn)
 			wsc.serve()
 		}()
 	}
+}
+
+func (s *Server) Serve(addr string) (err error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	s.serve(ln)
+	return
+}
+
+func (s *Server) ServeTLS(addr string, certFile string, keyFile string) (err error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	config := new(tls.Config)
+	config.NextProtos = []string{"http/1.1"}
+	config.Certificates = make([]tls.Certificate, 1)
+	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+	tlsLn := tls.NewListener(ln, config)
+	s.serve(tlsLn)
+	return
 }

@@ -59,14 +59,18 @@ func handler(wsc *websocket.Connection, reverse bool) error {
 }
 
 func main() {
-    server := websocket.NewServer(":1234", handshake, websocket.Config{
+    server := websocket.NewServer(websocket.Config{
+        Handshake:       handshake,
         MaxMsgLen:       16 * 1024 * 1024,
         SockReadBuffer:  4 * 1024 * 1024,
         SockWriteBuffer: 4 * 1024 * 1024,
         IOStatistics:    true,
         LogLevel:        websocket.LOG_INFO,
     })
-    log.Fatalln(server.Serve())
+    go func() {
+        log.Fatalln(server.Serve(":80"))
+    }()
+    log.Fatalln(server.ServeTLS(":443", "/path/to/cert.crt", "/path/to/cert.key"))
 }
 ```
 

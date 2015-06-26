@@ -124,14 +124,12 @@ func put(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	// run websocket server
-	var wsServer = websocket.NewServer("127.0.0.1:1234", handshake, websocket.Config{
-		LogLevel: websocket.LOG_DEBUG,
+	var wsServer = websocket.NewServer(websocket.Config{
+		Handshake: handshake,
+		LogLevel:  websocket.LOG_DEBUG,
 	})
 	go func() {
-		err := wsServer.Serve()
-		if err != nil {
-			log.Fatalln(err)
-		}
+		log.Fatalln(wsServer.Serve(":1234"))
 	}()
 
 	// run internal interface

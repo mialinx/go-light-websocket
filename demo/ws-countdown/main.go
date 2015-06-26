@@ -33,12 +33,13 @@ func handler(rc <-chan *websocket.Message, wc chan<- *websocket.Message) error {
 }
 
 func main() {
-	server := websocket.NewServer(":1234", handshake, websocket.Config{
+	server := websocket.NewServer(websocket.Config{
+		Handshake:       handshake,
 		MaxMsgLen:       16 * 1024 * 1024,
 		SockReadBuffer:  4 * 1024 * 1024,
 		SockWriteBuffer: 4 * 1024 * 1024,
 		IOStatistics:    true,
 		LogLevel:        websocket.LOG_INFO,
 	})
-	log.Fatalln(server.Serve())
+	log.Fatalln(server.Serve(":1234"))
 }
