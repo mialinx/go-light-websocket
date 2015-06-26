@@ -50,6 +50,23 @@ func ParseCloseBody(b []byte) (code uint16, reason string) {
 	return
 }
 
+func Err2CodeReason(err error) (uint16, string) {
+	if err == nil {
+		return STATUS_OK, ""
+	}
+	switch err {
+	case ErrBadFrame, ErrUnmaskedFrame, ErrUnexpectedFrame, ErrUnexpectedContinuation:
+		return STATUS_PROTOCOL_ERROR, err.Error()
+	case ErrUnknownOpcode:
+		return STATUS_UNACCEPTABLE_DATA, err.Error()
+	case ErrMessageTooLarge:
+		return STATUS_TOO_LARGE, err.Error()
+	default:
+		return STATUS_INTERNAL, "internal"
+	}
+	panic("freak out")
+}
+
 func BuildCloseBody(code uint16, reason string) []byte {
 	b := make([]byte, 2+len(reason))
 	b[0] = byte((code >> 8) & 0xFF)
@@ -58,21 +75,8 @@ func BuildCloseBody(code uint16, reason string) []byte {
 	return b
 }
 
-func Err2Close(err error) []byte {
-	if err == nil {
-		return BuildCloseBody(STATUS_OK, "")
-	}
-	switch err {
-	case ErrBadFrame, ErrUnmaskedFrame, ErrUnexpectedFrame, ErrUnexpectedContinuation:
-		return BuildCloseBody(STATUS_PROTOCOL_ERROR, err.Error())
-	case ErrUnknownOpcode:
-		return BuildCloseBody(STATUS_UNACCEPTABLE_DATA, err.Error())
-	case ErrMessageTooLarge:
-		return BuildCloseBody(STATUS_TOO_LARGE, err.Error())
-	default:
-		return BuildCloseBody(STATUS_INTERNAL, "internal")
-	}
-	panic("freak out")
+func BuildCloseBodyError(err error) []byte {
+	return BuildCloseBody(Err2CodeReason(err))
 }
 
 // multiframe message

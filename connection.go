@@ -79,8 +79,8 @@ func (wsc *Connection) setupBuffio(rs, ws int) {
 		r = wsc.conn
 		w = wsc.conn
 	}
-	wsc.r = bufio.NewReaderSize(r, wsc.server.Config.WsReadBuffer)
-	wsc.w = bufio.NewWriterSize(w, wsc.server.Config.WsWriteBuffer)
+	wsc.r = bufio.NewReaderSize(r, rs)
+	wsc.w = bufio.NewWriterSize(w, ws)
 }
 
 func (wsc *Connection) serve() {
@@ -96,12 +96,11 @@ func (wsc *Connection) serve() {
 	}()
 	wsc.LogDebug("connection established")
 	wsc.server.Stats.add(eventConnect{})
-	wsc.SetReadTimeout(wsc.server.Config.HandshakeReadTimeout)
 
+	wsc.SetReadDeadlineDuration(wsc.server.Config.HandshakeReadTimeout)
 	req, err := http.ReadRequest(wsc.r)
-	if req != nil {
-		req.RemoteAddr = wsc.conn.RemoteAddr().String()
-	}
+	wsc.SetReadDeadlineDuration(0)
+
 	rspw := newHtttpResponseWriter()
 
 	if err != nil {
@@ -109,32 +108,34 @@ func (wsc *Connection) serve() {
 		rspw.Header().Set("Content-Type", "text/plain")
 		rspw.Header().Set("Connection", "close")
 		rspw.WriteHeader(http.StatusBadRequest)
-		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
+		wsc.SetWriteDeadlineDuration(wsc.server.Config.HandshakeWriteTimeout)
 		rspw.WriteTo(wsc.w)
 		wsc.w.Flush()
+		wsc.SetWriteDeadlineDuration(0)
 		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	}
+	req.RemoteAddr = wsc.conn.RemoteAddr().String()
 	handler := wsc.httpHandshake(req, rspw)
 	if handler == nil {
 		wsc.LogError("handshake failed %d: %s", rspw.rsp.StatusCode, rspw.body.String())
 		rspw.Header().Set("Content-Type", "text/plain")
 		rspw.Header().Set("Connection", "close")
-		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
+		wsc.SetWriteDeadlineDuration(wsc.server.Config.HandshakeWriteTimeout)
 		rspw.WriteTo(wsc.w)
 		wsc.w.Flush()
+		wsc.SetWriteDeadlineDuration(0)
 		wsc.Close()
 		wsc.server.Stats.add(eventHandshakeFailed{})
 		return
 	} else {
-		wsc.SetWriteTimeout(wsc.server.Config.HandshakeWriteTimeout)
+		wsc.SetWriteDeadlineDuration(wsc.server.Config.HandshakeWriteTimeout)
 		rspw.WriteTo(wsc.w)
 		wsc.w.Flush()
+		wsc.SetWriteDeadlineDuration(0)
 	}
 	wsc.server.Stats.add(eventHandshake{})
-	wsc.SetReadTimeout(0)
-	wsc.SetWriteTimeout(0)
 	// let gc rip them
 	req = nil
 	rspw = nil
@@ -445,25 +446,26 @@ func (wsc *Connection) SendClose(code uint16, reason string) error {
 }
 
 func (wsc *Connection) SendCloseError(err error) error {
-	return wsc.Send(&Message{OPCODE_CLOSE, Err2Close(err)})
+	return wsc.Send(&Message{OPCODE_CLOSE, BuildCloseBodyError(err)})
 }
 
-func (wsc *Connection) Close() {
-	wsc.conn.Close()
+func (wsc *Connection) Close() error {
+	err := wsc.conn.Close()
 	wsc.closed = true
 	wsc.LogDebug("socket closed")
+	return err
 }
 
-func (wsc *Connection) CloseGraceful(err error) {
+func (wsc *Connection) CloseGraceful(code uint16, reason string) error {
 	if wsc.SentClose == nil {
 		if wsc.RcvdClose == nil {
-			_ = wsc.SendCloseError(err)
+			_ = wsc.SendClose(code, reason)
 		} else {
 			_ = wsc.Send(wsc.RcvdClose)
 		}
 	}
 	if wsc.RcvdClose == nil {
-		wsc.SetReadTimeout(wsc.server.Config.CloseTimeout)
+		wsc.SetReadDeadlineDuration(wsc.server.Config.CloseTimeout)
 		for {
 			msg, err := wsc.Recv()
 			if err != nil || msg.Opcode == OPCODE_CLOSE {
@@ -471,7 +473,11 @@ func (wsc *Connection) CloseGraceful(err error) {
 			}
 		}
 	}
-	wsc.Close()
+	return wsc.Close()
+}
+
+func (wsc *Connection) CloseGracefulError(err error) error {
+	return wsc.CloseGraceful(Err2CodeReason(err))
 }
 
 //////////////// Options ////////////////////
@@ -480,7 +486,7 @@ func (wsc *Connection) SetReadDeadline(t time.Time) error {
 	return wsc.conn.SetReadDeadline(t)
 }
 
-func (wsc *Connection) SetReadTimeout(d time.Duration) error {
+func (wsc *Connection) SetReadDeadlineDuration(d time.Duration) error {
 	var t time.Time
 	if d > 0 {
 		t = time.Now().Add(d)
@@ -492,7 +498,7 @@ func (wsc *Connection) SetWriteDeadline(t time.Time) error {
 	return wsc.conn.SetWriteDeadline(t)
 }
 
-func (wsc *Connection) SetWriteTimeout(d time.Duration) error {
+func (wsc *Connection) SetWriteDeadlineDuration(d time.Duration) error {
 	var t time.Time
 	if d > 0 {
 		t = time.Now().Add(d)
