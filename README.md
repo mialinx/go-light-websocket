@@ -60,6 +60,9 @@ func handler(wsc *websocket.Connection, reverse bool) error {
 
 func main() {
     server := websocket.NewServer(websocket.Config{
+        Addr:            ":443",
+        CertFile:        "/path/to/cert.crt",
+        KeyFile:         "/path/to/cert.key",
         Handshake:       handshake,
         MaxMsgLen:       16 * 1024 * 1024,
         SockReadBuffer:  4 * 1024 * 1024,
@@ -68,9 +71,8 @@ func main() {
         LogLevel:        websocket.LOG_INFO,
     })
     go func() {
-        log.Fatalln(server.Serve(":80"))
+        log.Fatalln(server.ServeTLS())
     }()
-    log.Fatalln(server.ServeTLS(":443", "/path/to/cert.crt", "/path/to/cert.key"))
 }
 ```
 

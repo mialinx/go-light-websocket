@@ -14,6 +14,9 @@ type Server struct {
 
 type Config struct {
 	Handshake             HandshakeFunc
+	Addr                  string
+	CertFile              string
+	KeyFile               string
 	MaxMsgLen             int
 	SockReadBuffer        int
 	SockWriteBuffer       int
@@ -32,6 +35,9 @@ type Config struct {
 func NewServer(config Config) *Server {
 	if config.Handshake == nil {
 		panic("config.Handshake is not set")
+	}
+	if config.Addr == "" {
+		panic("config.Addr is not set")
 	}
 	if config.SockReadBuffer == 0 {
 		config.SockReadBuffer = DefaultSockReadBuffer
@@ -85,8 +91,8 @@ func (s *Server) serve(ln net.Listener) {
 	}
 }
 
-func (s *Server) Serve(addr string) (err error) {
-	ln, err := net.Listen("tcp", addr)
+func (s *Server) Serve() (err error) {
+	ln, err := net.Listen("tcp", s.Config.Addr)
 	if err != nil {
 		return err
 	}
@@ -94,15 +100,18 @@ func (s *Server) Serve(addr string) (err error) {
 	return
 }
 
-func (s *Server) ServeTLS(addr string, certFile string, keyFile string) (err error) {
-	ln, err := net.Listen("tcp", addr)
+func (s *Server) ServeTLS() (err error) {
+	ln, err := net.Listen("tcp", s.Config.Addr)
 	if err != nil {
 		return err
+	}
+	if s.Config.CertFile == "" || s.Config.KeyFile == "" {
+		panic("cert-file or key-file not specified")
 	}
 	config := new(tls.Config)
 	config.NextProtos = []string{"http/1.1"}
 	config.Certificates = make([]tls.Certificate, 1)
-	config.Certificates[0], err = tls.LoadX509KeyPair(certFile, keyFile)
+	config.Certificates[0], err = tls.LoadX509KeyPair(s.Config.CertFile, s.Config.KeyFile)
 	if err != nil {
 		return err
 	}
