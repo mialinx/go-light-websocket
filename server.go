@@ -43,19 +43,19 @@ func NewServer(config Config) *Server {
 		config.SockReadBuffer = DefaultSockReadBuffer
 	}
 	if config.SockWriteBuffer == 0 {
-		config.SockWriteBuffer = DefaultSockReadBuffer
+		config.SockWriteBuffer = DefaultSockWriteBuffer
 	}
 	if config.HttpReadBuffer == 0 {
 		config.HttpReadBuffer = DefaultHttpReadBuffer
 	}
 	if config.HttpWriteBuffer == 0 {
-		config.HttpWriteBuffer = DefaultHttpReadBuffer
+		config.HttpWriteBuffer = DefaultHttpWriteBuffer
 	}
 	if config.WsReadBuffer == 0 {
 		config.WsReadBuffer = DefaultWsReadBuffer
 	}
 	if config.WsWriteBuffer == 0 {
-		config.WsWriteBuffer = DefaultWsReadBuffer
+		config.WsWriteBuffer = DefaultWsWriteBuffer
 	}
 	if config.MaxMsgLen == 0 {
 		config.MaxMsgLen = DefaultMaxMsgLen
