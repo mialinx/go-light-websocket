@@ -94,6 +94,7 @@ func (wws *WriterWithStats) Write(b []byte) (n int, err error) {
 
 type Stats struct {
 	Connections        uint64
+	MaxConnections     uint64
 	ConnectionsReading uint64
 	ConnectionsWriting uint64
 	Handshakes         *RpsCounter
@@ -106,6 +107,7 @@ type Stats struct {
 func (st *Stats) String() string {
 	s := ""
 	s += fmt.Sprintf("Connections: %d\n", st.Connections)
+	s += fmt.Sprintf("  Max: %d\n", st.MaxConnections)
 	s += fmt.Sprintf("  Reading: %d\n", st.ConnectionsReading)
 	s += fmt.Sprintf("  Wriring: %d\n", st.ConnectionsWriting)
 	s += fmt.Sprintf("Handshakes: %s\n", st.Handshakes)
@@ -162,6 +164,9 @@ func (st *Stats) handler() {
 		switch ev := ev.(type) {
 		case eventConnect:
 			st.Connections++
+			if st.Connections > st.MaxConnections {
+				st.MaxConnections = st.Connections
+			}
 		case eventClose:
 			if st.Connections > 0 {
 				st.Connections--
