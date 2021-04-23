@@ -112,6 +112,9 @@ func (s *Server) ServeTLS() (err error) {
 	config.NextProtos = []string{"http/1.1"}
 	config.Certificates = make([]tls.Certificate, 1)
 	config.Certificates[0], err = tls.LoadX509KeyPair(s.Config.CertFile, s.Config.KeyFile)
+	// select only strong ciphers from this list https://golang.org/pkg/crypto/tls/#pkg-constants
+	config.CipherSuites = []uint16{0x002f, 0x0035, 0x003c, 0x009c, 0x009d, 0xc007, 0xc009, 0xc00a, 0xc013, 0xc014,
+		0xc023, 0xc027, 0xc02f, 0xc02b, 0xc030, 0xc02c, 0xcca8, 0xcca9, 0x1301, 0x1302, 0x1303}
 	if err != nil {
 		return err
 	}
