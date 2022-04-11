@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/mialinx/go-light-websocket"
+	websocket "go-light-websocket"
 	"log"
 	"net/http"
 	"strconv"

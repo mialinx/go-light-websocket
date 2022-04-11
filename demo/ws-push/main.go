@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/mialinx/go-light-websocket"
+	websocket "go-light-websocket"
 	"io"
 	"log"
 	"net/http"
